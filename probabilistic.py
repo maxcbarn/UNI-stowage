@@ -1,6 +1,7 @@
 import argparse
 import copy
 import random
+<<<<<<< HEAD
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, TypeVar, Generic, Optional
 from itertools import product
@@ -164,6 +165,15 @@ class PhysicsUtils:
         }
 
 # --- UPDATED HEURISTIC SCORING ---
+=======
+from typing import List, Tuple
+
+from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range
+
+# ==========================================
+# 1. HEURISTIC ENGINE (Used for Expansion & Rollout)
+# ==========================================
+>>>>>>> a1dc743 ([Feat]: common interface common.py)
 
 
 def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
@@ -196,7 +206,14 @@ def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
 
     return score
 
+<<<<<<< HEAD
 # --- SOLVER ENGINE ---
+=======
+
+# ==========================================
+# 3. MONTE CARLO TREE SEARCH (MCTS)
+# ==========================================
+>>>>>>> a1dc743 ([Feat]: common interface common.py)
 
 
 def randomized_greedy_solver(containers: List[Container], vessel: Vessel, alpha: float) -> Tuple[List, List]:

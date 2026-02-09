@@ -1,128 +1,11 @@
 from collections import defaultdict
-from dataclasses import dataclass, field
-from random import choice, randrange, random, seed
-from typing import DefaultDict, Dict, List, Tuple, TypeVar, Generic, Optional
+from dataclasses import dataclass
+from random import seed
+from typing import List, Tuple
+
+from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range, Numeric
 from itertools import product
 import argparse
-
-
-Numeric = TypeVar("Numeric", int, float)
-
-
-@dataclass
-class Range(Generic[Numeric]):
-    start: Numeric
-    end: Numeric
-
-    def __call__(self) -> Numeric:
-        if isinstance(self.start, int) and isinstance(self.end, int):
-
-            if self.start >= self.end:
-                return self.start
-            return randrange(self.start, self.end)
-        else:
-            return random() * (self.end - self.start) + self.start
-
-
-type ChoiceDomain[T] = list[T]
-
-
-@dataclass
-class Container:
-    id: int = field(init=False)
-    weight: float
-    dischargePort: int
-    length: float
-    reefer: bool
-    _static_id: int = field(default=0, repr=False)
-
-    def __post_init__(self):
-        type(self)._static_id += 1
-        self.id = type(self)._static_id
-
-    def __repr__(self):
-        r_tag = "R" if self.reefer else "S"
-        return f"Cnt({self.id}, {self.length:.0f}ft, {r_tag}, W:{self.weight:.0f}, P:{self.dischargePort})"
-
-    @classmethod
-    def genRandom(cls, weight: Range[float], port: Range[int], length_domain: ChoiceDomain[float], threshold: float):
-
-        return cls(weight(), port(), choice(length_domain), random() > threshold)
-
-
-@dataclass
-class Slot:
-    bay: int
-    row: int
-    tier: int
-    max_weight: float
-    length: float
-    reefer: bool
-    container: Container | None = None
-
-    @property
-    def is_free(self):
-        return self.container is None
-
-
-@dataclass(frozen=True)
-class SlotCoord:
-    bay: int
-    row: int
-    tier: int
-
-
-class Vessel:
-    def __init__(self, bays: int, rows: int, tiers: int, weight: Range[float]):
-        self.bays = bays
-        self.rows = rows
-        self.tiers = tiers
-        self.slots: Dict[SlotCoord, Slot] = {}
-
-        for b, r, t in product(range(self.bays), range(self.rows), range(self.tiers)):
-
-            has_plug = (r == self.rows - 1)
-
-            slot_len = 40.0 if (b % 2 == 0) else 20.0
-
-            self.slots[SlotCoord(b, r, t)] = Slot(
-                b, r, t, weight.end, slot_len, has_plug
-            )
-
-    @property
-    def capacity(self):
-        return len(self.slots)
-
-    def get_slot_at(self, coord: SlotCoord) -> Slot | None:
-        return self.slots.get(coord)
-
-    def place(self, container: Container, slot: Slot) -> None:
-        slot.container = container
-
-    def check_hard_constraints(self, container: Container, slot: Slot) -> bool:
-        """
-        Feasibility Checks (Binary: Yes/No)
-        """
-
-        if not slot.is_free:
-            return False
-
-        if container.weight > slot.max_weight:
-            return False
-
-        if slot.tier > 0:
-            slot_below = self.get_slot_at(
-                SlotCoord(slot.bay, slot.row, slot.tier - 1))
-            if slot_below is None or slot_below.is_free:
-                return False
-
-        if container.reefer and not slot.reefer:
-            return False
-
-        if container.length != slot.length:
-            return False
-
-        return True
 
 
 class PhysicsUtils:
@@ -260,7 +143,7 @@ def gen_case(
         args
 ):
 
-    ship = Vessel(bays(), rows(), tiers(), weight)
+    ship = Vessel(bays(), rows(), tiers(), weight.end)
 
     cargo_amt = container_amount()
 
