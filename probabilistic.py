@@ -1,11 +1,15 @@
 import argparse
 import copy
+import math
 import random
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, TypeVar, Generic, Optional
+from typing import Dict, List, Optional, Tuple, TypeVar, Generic
 from itertools import product
 
-# --- DATA STRUCTURES ---
+# ==========================================
+# 1. CORE DATA STRUCTURES (Unchanged)
+# ==========================================
 
 Numeric = TypeVar("Numeric", int, float)
 
@@ -20,8 +24,7 @@ class Range(Generic[Numeric]):
             if self.start >= self.end:
                 return self.start
             return random.randrange(self.start, self.end)
-        else:
-            return random.random() * (self.end - self.start) + self.start
+        return random.random() * (self.end - self.start) + self.start
 
 
 @dataclass
@@ -29,8 +32,8 @@ class Container:
     id: int = field(init=False)
     weight: float
     dischargePort: int
-    is_reefer: bool = False
-    length: int = 20
+    length: float
+    reefer: bool
     _static_id: int = field(default=0, repr=False)
 
     def __post_init__(self):
@@ -38,14 +41,11 @@ class Container:
         self.id = type(self)._static_id
 
     def __repr__(self):
-        r_tag = "R" if self.is_reefer else "S"
-        return f"Cnt({self.id}, {self.length}ft, {r_tag}, W:{self.weight:.0f}, P:{self.dischargePort})"
+        return f"C({self.id}, P:{self.dischargePort}, {self.weight:.0f}kg)"
 
     @classmethod
-    def genRandom(cls, weight: Range[float], port: Range[int]):
-        is_r = random.random() < 0.10
-        l = 40 if random.random() < 0.30 else 20
-        return cls(weight(), port(), is_reefer=is_r, length=l)
+    def genRandom(cls, weight, port, lengths, thresh):
+        return cls(weight(), port(), random.choice(lengths), random.random() > thresh)
 
 
 @dataclass
@@ -54,13 +54,11 @@ class Slot:
     row: int
     tier: int
     max_weight: float
-    is_reefer: bool = False
-    length: int = 20
+    length: float
+    reefer: bool
     container: Optional[Container] = None
-
     @property
-    def is_free(self):
-        return self.container is None
+    def is_free(self): return self.container is None
 
 
 @dataclass(frozen=True)
@@ -70,255 +68,249 @@ class SlotCoord:
     tier: int
 
 
-@dataclass
 class Vessel:
-    bays: int
-    rows: int
-    tiers: int
-    max_weight: float
-    slots: Dict[SlotCoord, Slot] = field(
-        default_factory=dict, init=False, repr=False)
+    def __init__(self, bays, rows, tiers, max_w):
+        self.bays, self.rows, self.tiers = bays, rows, tiers
+        self.slots = {}
+        for b, r, t in product(range(bays), range(rows), range(tiers)):
+            plug = (r == rows - 1)
+            l = 40.0 if (b % 2 == 0) else 20.0
+            self.slots[SlotCoord(b, r, t)] = Slot(b, r, t, max_w, l, plug)
 
+    def get_slot_at(self, c): return self.slots.get(c)
+    def place(self, c, s): s.container = c
     @property
-    def capacity(self):
-        return len(self.slots)
+    def capacity(self): return len(self.slots)
 
-    def __post_init__(self):
-        for b, r, t in product(range(self.bays), range(self.rows), range(self.tiers)):
-            # Configuration Logic
-            has_plug = (r == self.rows - 1)
-            slot_len = 40 if (b % 2 == 0) else 20
-            self.slots[SlotCoord(b, r, t)] = Slot(
-                b, r, t, self.max_weight, is_reefer=has_plug, length=slot_len
-            )
-
-    def get_slot_at(self, coord: SlotCoord) -> Optional[Slot]:
-        return self.slots.get(coord)
-
-    def place(self, container: Container, slot: Slot):
-        slot.container = container
-
-    def check_hard_constraints(self, container: Container, slot: Slot) -> bool:
-        if not slot.is_free:
+    # --- Constraints & Physics (Reused) ---
+    def check_hard_constraints(self, c, s):
+        if not s.is_free:
             return False
-        if container.weight > slot.max_weight:
+        if c.weight > s.max_weight:
             return False
-
-        # Floating check
-        if slot.tier > 0:
-            below = self.get_slot_at(
-                SlotCoord(slot.bay, slot.row, slot.tier - 1))
-            if below is None or below.is_free:
+        if s.tier > 0:
+            below = self.get_slot_at(SlotCoord(s.bay, s.row, s.tier - 1))
+            if not below or below.is_free:
                 return False
-
-        # Type/Size checks
-        if container.is_reefer and not slot.is_reefer:
+        if c.reefer and not s.reefer:
             return False
-        if container.length != slot.length:
+        if c.length != s.length:
             return False
         return True
 
-# --- NEW: PHYSICS ENGINE (Ported from Snippet) ---
-
-
-class PhysicsUtils:
-    @staticmethod
-    def calculate_rehandles(vessel: Vessel) -> int:
-        total = 0
-        for b, r in product(range(vessel.bays), range(vessel.rows)):
-            stack_slots = [vessel.get_slot_at(
-                SlotCoord(b, r, t)) for t in range(vessel.tiers)]
-            filled_slots = [s for s in stack_slots if s and s.container]
-
-            for i in range(1, len(filled_slots)):
-                below = filled_slots[i-1].container
-                above = filled_slots[i].container
-                if above.dischargePort > below.dischargePort:
-                    total += 1
-        return total
-
-    @staticmethod
-    def calculate_moments(vessel: Vessel) -> dict:
-        total_weight = 0.0
-        moment_bay = 0.0
-        moment_row = 0.0
-        moment_tier = 0.0
-        center_bay = (vessel.bays - 1) / 2.0
-        center_row = (vessel.rows - 1) / 2.0
-
-        for slot in vessel.slots.values():
-            if slot.container:
-                w = slot.container.weight
-                total_weight += w
-                moment_bay += w * (slot.bay - center_bay)
-                moment_row += w * (slot.row - center_row)
-                moment_tier += w * slot.tier
-
-        if total_weight == 0:
-            return {"bay": 0.0, "row": 0.0, "tier": 0.0}
-
-        return {
-            "bay": moment_bay / total_weight,
-            "row": moment_row / total_weight,
-            "tier": moment_tier / total_weight
-        }
-
-# --- UPDATED HEURISTIC SCORING ---
+# ==========================================
+# 2. HEURISTIC ENGINE (Used for Expansion & Rollout)
+# ==========================================
 
 
 def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
     score = 0.0
-    slot_below = None
-    if slot.tier > 0:
-        slot_below = vessel.get_slot_at(
-            SlotCoord(slot.bay, slot.row, slot.tier - 1))
-
-    # 1. Stability (Minimize Tier Moment)
-    # Penalize high placements, scaled by weight
+    # Stability: Lower is better
     score -= (slot.tier * container.weight) / 1000.0
-
-    # 2. Balance (Minimize Bay/Row Moments)
-    # Prefer placing heavy items near the geometric center
-    center_bay = (vessel.bays - 1) / 2.0
-    center_row = (vessel.rows - 1) / 2.0
-    dist_bay = abs(slot.bay - center_bay)
-    dist_row = abs(slot.row - center_row)
-
-    score -= (dist_bay + dist_row) * (container.weight / 1000.0)
-
-    # 3. Rehandles (Hard Penalty)
-    if slot_below and slot_below.container:
-        if container.dischargePort > slot_below.container.dischargePort:
-            score -= 10000.0
-        # 4. Anti-Crush (Auxiliary)
-        if container.weight > slot_below.container.weight:
-            score -= 5000.0
-
+    # Balance: Center is better
+    dist_row = abs(slot.row - (vessel.rows - 1)/2.0)
+    score -= dist_row * (container.weight / 1000.0)
+    # Overstowage Prevention
+    if slot.tier > 0:
+        below = vessel.get_slot_at(
+            SlotCoord(slot.bay, slot.row, slot.tier - 1)).container
+        if below:
+            if container.dischargePort > below.dischargePort:
+                score -= 10000.0
+            if container.weight > below.weight:
+                score -= 5000.0
     return score
 
-# --- SOLVER ENGINE ---
+
+def calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
+    # 1. Rehandles
+    rehandles = 0
+    for b, r in product(range(vessel.bays), range(vessel.rows)):
+        stack = [vessel.get_slot_at(SlotCoord(b, r, t))
+                 for t in range(vessel.tiers)]
+        filled = [s.container for s in stack if s.container]
+        for i in range(1, len(filled)):
+            if filled[i].dischargePort > filled[i-1].dischargePort:
+                rehandles += 1
+
+    # 2. Moments
+    # (Simplified for MCTS speed: just track Stability)
+    tier_moment = sum(
+        s.tier * s.container.weight for s in vessel.slots.values() if s.container)
+
+    # Cost Function
+    cost = (rehandles * 1000.0) + (tier_moment * 0.1) + \
+        (len(leftovers) * 5000.0)
+    return cost
+
+# ==========================================
+# 3. MONTE CARLO TREE SEARCH (MCTS)
+# ==========================================
 
 
-def randomized_greedy_solver(containers: List[Container], vessel: Vessel, alpha: float) -> Tuple[List, List]:
-    # Sort Phase
-    load_list = sorted(containers, key=lambda c: (
+class MCTSNode:
+    def __init__(self, vessel_state: Vessel, remaining_cargo: List[Container], parent=None):
+        self.vessel = vessel_state
+        self.cargo = remaining_cargo  # Cargo yet to be placed
+        self.parent = parent
+        self.children: List[MCTSNode] = []
+        self.visits = 0
+        self.value = 0.0  # Cumulative reward
+        self.untried_moves = None  # To be populated
+
+    @property
+    def is_terminal(self):
+        return len(self.cargo) == 0
+
+    @property
+    def is_fully_expanded(self):
+        return self.untried_moves is not None and len(self.untried_moves) == 0
+
+    def get_legal_moves(self) -> List[Tuple[Container, Slot]]:
+        """Identify the next container and top valid slots."""
+        if not self.cargo:
+            return []
+
+        # Strategy: Strict Ordering. We only try to place the NEXT container.
+        next_c = self.cargo[0]
+
+        candidates = []
+        for s in self.vessel.slots.values():
+            if self.vessel.check_hard_constraints(next_c, s):
+                candidates.append((s, score_move(self.vessel, next_c, s)))
+
+        # Heuristic Pruning: Only consider top 5 slots to keep tree manageable
+        # This is critical for performance in Python
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        top_k = candidates[:5]
+
+        return [(next_c, x[0]) for x in top_k]
+
+
+def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations: int = 1000):
+    # Sort cargo once (Global Ordering Strategy) [cite: 151]
+    sorted_cargo = sorted(initial_cargo, key=lambda c: (
         c.dischargePort, c.weight), reverse=True)
-    plan = []
-    left_behind = []
 
-    for container in load_list:
-        valid_moves = []
-        for slot in vessel.slots.values():
-            if vessel.check_hard_constraints(container, slot):
-                s = score_move(vessel, container, slot)
-                valid_moves.append((slot, s))
+    root = MCTSNode(copy.deepcopy(root_vessel), sorted_cargo)
 
-        if not valid_moves:
-            left_behind.append(container)
-            continue
+    best_global_plan = None
+    min_global_cost = float('inf')
 
-        valid_moves.sort(key=lambda x: x[1], reverse=True)
-        cutoff = int(len(valid_moves) * alpha) + 1
-        rcl = valid_moves[:cutoff]
-        target_slot = random.choice(rcl)[0]
+    print(f"--- MCTS Start: {iterations} Iterations ---")
 
-        vessel.place(container, target_slot)
-        plan.append((container, target_slot))
+    for i in range(iterations):
+        node = root
 
-    return plan, left_behind
+        # 1. SELECTION (Traverse down to a leaf)
+        # Use UCB1: node_val/visits + C * sqrt(ln(parent_visits)/visits)
+        while not node.is_terminal and node.is_fully_expanded:
+            node = max(node.children, key=lambda c: (c.value / c.visits) +
+                       1.41 * math.sqrt(math.log(node.visits) / c.visits))
 
+        # 2. EXPANSION (Add a new child)
+        if not node.is_terminal and not node.is_fully_expanded:
+            if node.untried_moves is None:
+                node.untried_moves = node.get_legal_moves()
 
-@dataclass
-class PenaltyWeights:
-    overstow: float
-    stability: float  # Controls Beta (CoG) influence
+            if node.untried_moves:
+                container, slot = node.untried_moves.pop()
 
+                # Clone state for new node
+                new_vessel = copy.deepcopy(node.vessel)
+                new_vessel.place(container, new_vessel.get_slot_at(
+                    SlotCoord(slot.bay, slot.row, slot.tier)))
+                new_cargo = node.cargo[1:]  # Pop first item
 
-def run_monte_carlo(args, initial_cargo, base_vessel, penalties):
-    best_cost = float('inf')
-    best_metrics = {}
-    best_vessel = None
+                child_node = MCTSNode(new_vessel, new_cargo, parent=node)
+                node.children.append(child_node)
+                node = child_node
 
-    print(f"\n--- Starting Monte Carlo ({args.iterations} iters) ---")
+        # 3. SIMULATION (Rollout)
+        # Use Randomized Greedy logic to finish the plan from this node
+        sim_vessel = copy.deepcopy(node.vessel)
+        sim_cargo = list(node.cargo)
+        sim_leftovers = []
 
-    for i in range(args.iterations):
-        current_vessel = copy.deepcopy(base_vessel)
-        plan, leftovers = randomized_greedy_solver(
-            initial_cargo, current_vessel, alpha=args.alpha)
+        # Fast Greedy Rollout
+        for c in sim_cargo:
+            candidates = []
+            for s in sim_vessel.slots.values():
+                if sim_vessel.check_hard_constraints(c, s):
+                    candidates.append((s, score_move(sim_vessel, c, s)))
 
-        # METRIC CALCULATION (Matching MILP)
-        rehandles = PhysicsUtils.calculate_rehandles(current_vessel)
-        moments = PhysicsUtils.calculate_moments(current_vessel)
+            if candidates:
+                # Greedy choice (Top 1) for speed in rollout
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                target = candidates[0][0]
+                sim_vessel.place(c, target)
+            else:
+                sim_leftovers.append(c)
 
-        # COST FUNCTION: Z = Alpha*Rehandles + Beta*Moments
-        # We use penalties.overstow for Alpha, penalties.stability for Beta
-        cost = (rehandles * penalties.overstow) + \
-               (abs(moments['bay']) * penalties.stability) + \
-               (abs(moments['row']) * penalties.stability) + \
-               (moments['tier'] * penalties.stability)
+        # 4. BACKPROPAGATION
+        # Convert Cost to Reward (Lower cost = Higher Reward)
+        # Using simple normalization 100000 / cost
+        cost = calculate_cost(sim_vessel, sim_leftovers)
+        reward = 1.0 / (1.0 + cost)
 
-        cost += len(leftovers) * 5000.0  # Operational penalty
-
-        if cost < best_cost:
-            best_cost = cost
-            best_vessel = current_vessel
-            best_metrics = {"rehandles": rehandles,
-                            "moments": moments, "left": len(leftovers)}
+        # Update Best Found
+        if cost < min_global_cost:
+            min_global_cost = cost
+            best_global_plan = sim_vessel
             print(
-                f"  [Iter {i+1}] New Best Z: {cost:.2f} (Rehandles: {rehandles}, TierM: {moments['tier']:.2f})")
+                f"  > Iter {i}: New Best Cost {cost:.0f} (Left: {len(sim_leftovers)})")
 
-    return best_metrics, best_vessel, best_cost
+        # Propagate up
+        while node is not None:
+            node.visits += 1
+            node.value += reward
+            node = node.parent
 
-# --- MAIN CLI ---
+    return best_global_plan, min_global_cost
+
+# ==========================================
+# 4. CLI RUNNER
+# ==========================================
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+def main():
+    parser = argparse.ArgumentParser(description="MCTS Stowage Solver")
     parser.add_argument("--bays", nargs="+", type=int, default=[5])
     parser.add_argument("--rows", nargs="+", type=int, default=[5])
     parser.add_argument("--tiers", nargs="+", type=int, default=[5])
     parser.add_argument("--containers", nargs="+", type=int, default=[50])
     parser.add_argument("--weight", nargs="+", type=float,
                         default=[1000.0, 30000.0])
-    parser.add_argument("--ports", nargs="+", type=int, default=[1, 5])
-    parser.add_argument("--iterations", type=int, default=10)
-    parser.add_argument("--alpha", type=float, default=0.15)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--iterations", type=int, default=100)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    if args.seed:
-        random.seed(args.seed)
+    random.seed(args.seed)
 
-    def to_range(vals, is_float=False):
+    def r(vals, f=False):
         if len(vals) == 1:
-            return Range(vals[0], vals[0] if is_float else vals[0]+1)
+            return Range(vals[0], vals[0] if f else vals[0]+1)
         return Range(vals[0], vals[1])
 
-    vessel = Vessel(to_range(args.bays)(), to_range(args.rows)
-                    (), to_range(args.tiers)(), args.weight[-1])
-    gen_amt = to_range(args.containers)()
-    cargo = [Container.genRandom(to_range(args.weight, True), to_range(
-        args.ports)) for _ in range(gen_amt)]
+    vessel = Vessel(r(args.bays)(), r(args.rows)(),
+                    r(args.tiers)(), args.weight[-1])
+    cargo = [Container.genRandom(r(args.weight, True), r(
+        [1, 5]), [20, 40], 0.8) for _ in range(r(args.containers)())]
 
-    # Weights: Overstow is expensive (ALPHA), Stability is secondary (BETA)
-    penalties = PenaltyWeights(overstow=1000.0, stability=10.0)
-
-    metrics, best_ves, cost = run_monte_carlo(args, cargo, vessel, penalties)
-
-    print(f"\n--- FINAL RESULTS ---")
-    print(f"Objective Value (Z): {cost:.2f}")
-    print(f"Total Rehandles: {metrics['rehandles']}")
     print(
-        f"CoG Deviations: Bay={metrics['moments']['bay']:.2f}, Row={metrics['moments']['row']:.2f}, Tier={metrics['moments']['tier']:.2f}")
-    print(f"Unstowed Containers: {metrics['left']}")
+        f"Initialized MCTS. Ship: {vessel.capacity} slots. Cargo: {len(cargo)} items.")
+    best_ves, cost = mcts_search(vessel, cargo, args.iterations)
 
-    # Visual check of Balance
-    print("\n--- BALANCE CHECK (Center Row) ---")
-    mid_row = (vessel.rows - 1) // 2
-    for b in range(vessel.bays):
-        filled_weight = 0
-        for t in range(vessel.tiers):
-            s = best_ves.get_slot_at(SlotCoord(b, mid_row, t))
-            if s and s.container:
-                filled_weight += s.container.weight
-        print(f"Bay {b} Row {mid_row} (Center): {filled_weight:.0f} kg")
+    print("\n--- MCTS RESULT ---")
+    print(f"Final Cost: {cost:.0f}")
+
+    # Display simple plan
+    count = 0
+    for s in best_ves.slots.values():
+        if s.container:
+            count += 1
+    print(f"Stowed: {count}/{len(cargo)}")
+
+
+if __name__ == "__main__":
+    main()
