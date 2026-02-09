@@ -3,6 +3,22 @@ from exact import *
 from aproximative import *
 from genetic import *
 
+# fazer test cases
+
+# 2 X 5 X 6 = 60 - 5
+# 2 X 5 X 6 = 60 - 10
+# 2 X 5 X 6 = 60 - 15
+# 2 X 5 X 6 = 60 - 20
+# 2 X 5 X 6 = 60 - 25
+# 2 X 5 X 6 = 60 - 30
+
+# 10 X 5 X 5 = 250 - 50
+# 10 X 5 X 5 = 250 - 100
+# 10 X 5 X 5 = 250 - 150
+# 10 X 5 X 5 = 250 - 200
+# 10 X 5 X 5 = 250  - 250
+
+# 10 X 10 X 10 = 1000 - 1000
 
 def main():
      # Example containers (id, weight, dest)
@@ -35,6 +51,7 @@ def main():
     print( res );
     
     
+
     
     
     
