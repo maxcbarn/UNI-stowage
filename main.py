@@ -19,6 +19,7 @@ def main():
         {'id': 10, 'weight': 8.0, 'dest': 1},
     ]
 
+<<<<<<< HEAD
     num_bays = 20
     num_rows = 10
     max_tiers = 5
@@ -33,3 +34,47 @@ def main():
 
 
 main()
+=======
+    num_bays = 5
+    num_rows = 2
+    max_tiers = 8
+
+    containerR = ContainerRamdom(10);
+    print( containerR )
+    # You can change ALPHA/BETA to tune priority between rehandles and balance
+    res = solve_stowage_3d_min_rehandles_with_cog(
+        containerR, num_bays, num_rows, max_tiers,
+        ALPHA=1.0, BETA=0.05
+    ) 
+    print( res );
+    res = solve_stowage_genetic(containerR, num_bays, num_rows, max_tiers)
+    print( res );
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+main()
+>>>>>>> 93f0091 (Genetic Semi Done)
