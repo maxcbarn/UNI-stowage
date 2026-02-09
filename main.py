@@ -1,11 +1,11 @@
 from common import *
 from exact import *
-from aproximative import *
+from aproximative.FFD import *
 from genetic import *
 
 
 def main():
-     # Example containers (id, weight, dest)
+    # Example containers (id, weight, dest)
     containers = [
         {'id': 1,  'weight': 4.0, 'dest': 1},
         {'id': 2,  'weight': 6.0, 'dest': 1},
@@ -23,40 +23,13 @@ def main():
     num_rows = 10
     max_tiers = 5
 
-
     # You can change ALPHA/BETA to tune priority between rehandles and balance
     res = solve_stowage_3d_min_rehandles_with_cog(
-        ContainerRamdom( 60 ), num_bays, num_rows, max_tiers,
+        ContainerRamdom(60), num_bays, num_rows, max_tiers,
         ALPHA=1.0, BETA=0.05
     )
 
-    print( res );
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    print(res)
+
+
 main()
