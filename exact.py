@@ -1,4 +1,5 @@
 import pulp
+import os
 from common import *
 from typing import List
 
@@ -105,7 +106,7 @@ def solve_stowage_3d_min_rehandles_with_cog(
     prob += row_moment - target_row_moment == Dr_pos - Dr_neg, "row_cog_balance"
     prob += tier_moment - target_tier_moment == Dt_pos - Dt_neg, "tier_cog_balance"
 
-    solver = pulp.PULP_CBC_CMD(msg=True)
+    solver = pulp.PULP_CBC_CMD(msg=True , threads=os.cpu_count())
     result = prob.solve(solver)
 
     status_str = pulp.LpStatus[prob.status]
