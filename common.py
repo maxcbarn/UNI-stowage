@@ -1,9 +1,43 @@
-from typing import List, Dict,  Optional, TypeVar, Generic
+from typing import List, Dict,  Optional, Tuple, TypeVar, Generic, TypedDict
 import random
 from itertools import product
 from dataclasses import dataclass, field
 
 Numeric = TypeVar("Numeric", int, float)
+
+
+class Cont(TypedDict):
+    id: int
+    weight: float
+    dest: int
+
+
+type List3D[T] = List[List[List[T]]]
+type Ship = List3D[Optional[Cont]]
+
+
+@dataclass
+class CostReport:
+    ship: Ship
+    rehandles: int = field(init=False)
+    moments: Tuple[float, float, float] = field(init=False)
+
+    def __post_init__(self):
+        self.rehandles = RehandlesNumber(self.ship)
+        self.moments = BayMoment(self.ship), RowMoment(
+            self.ship), TierMoment(self.ship)
+
+    @property
+    def bay_moment(self) -> float:
+        return BayMoment(self.ship)
+
+    @property
+    def row_moment(self) -> float:
+        return RowMoment(self.ship)
+
+    @property
+    def tier_moment(self) -> float:
+        return TierMoment(self.ship)
 
 
 @dataclass
@@ -24,8 +58,6 @@ class Container:
     id: int = field(init=False)
     weight: float
     dischargePort: int
-    length: float
-    reefer: bool
     _static_id: int = field(default=0, repr=False)
 
     def __post_init__(self):
@@ -36,8 +68,12 @@ class Container:
         return f"C({self.id}, P:{self.dischargePort}, {self.weight:.0f}kg)"
 
     @classmethod
-    def genRandom(cls, weight, port, lengths, thresh):
-        return cls(weight(), port(), random.choice(lengths), random.random() > thresh)
+    def from_cont(cls, cont: Cont):
+        return cls(cont['weight'], cont['dest'])
+
+    @classmethod
+    def gen_random(cls, weight: Range[float], port: Range[int]):
+        return cls(weight(), port())
 
 
 @dataclass
@@ -45,9 +81,6 @@ class Slot:
     bay: int
     row: int
     tier: int
-    max_weight: float
-    length: float
-    reefer: bool
     container: Optional[Container] = None
     @property
     def is_free(self): return self.container is None
@@ -61,16 +94,38 @@ class SlotCoord:
 
 
 class Vessel:
-    def __init__(self, bays, rows, tiers, max_w):
+    def __init__(self, bays: int = 0, rows: int = 0, tiers: int = 0):
         self.bays, self.rows, self.tiers = bays, rows, tiers
         self.slots: Dict[SlotCoord, Slot] = {}
         for b, r, t in product(range(bays), range(rows), range(tiers)):
-            plug = (r == rows - 1)
-            l = 40.0 if (b % 2 == 0) else 20.0
-            self.slots[SlotCoord(b, r, t)] = Slot(b, r, t, max_w, l, plug)
+            self.slots[SlotCoord(b, r, t)] = Slot(b, r, t)
 
-    def get_slot_at(self, c): return self.slots.get(c)
-    def place(self, c, s): s.container = c
+    @classmethod
+    def from_ship(cls, ship: Ship):
+        vessel = cls()
+
+        num_bays = len(ship)
+        num_rows = len(ship[0]) if num_bays > 0 else 0
+        num_tiers = len(ship[0][0]) if num_rows > 0 else 0
+
+        vessel.bays = num_bays
+        vessel.rows = num_rows
+        vessel.tiers = num_tiers
+
+        for b, bay in enumerate(ship):
+            for r, row in enumerate(bay):
+                for t, tier in enumerate(row):
+                    coord = SlotCoord(b, r, t)
+                    vessel.slots[coord] = Slot(b, r, t)
+                    if tier:
+                        vessel.slots[coord].container = Container.from_cont(
+                            tier)
+
+        return vessel
+
+    def get_slot_at(self, c: SlotCoord): return self.slots.get(c)
+
+    def place(self, c: Container, s: Slot): s.container = c
     @property
     def capacity(self): return len(self.slots)
 
@@ -78,28 +133,22 @@ class Vessel:
     def check_hard_constraints(self, c: Container, s: Slot):
         if not s.is_free:
             return False
-        if c.weight > s.max_weight:
-            return False
         if s.tier > 0:
             below = self.get_slot_at(SlotCoord(s.bay, s.row, s.tier - 1))
             if not below or below.is_free:
                 return False
-        if c.reefer and not s.reefer:
-            return False
-        if c.length != s.length:
-            return False
         return True
 
 
 def BuildStacks(num_bays: int, num_rows: int):
-    stacks = []
+    stacks: List[Tuple[int, int]] = []
     for bay in range(num_bays):
         for row in range(num_rows):
             stacks.append((bay, row))
     return stacks
 
 
-def RehandlesNumber(ship: List[List[List[dict[int, float, int]]]]):
+def RehandlesNumber(ship: Ship) -> int:
     total = 0
     for bay in ship:
         for row in bay:
@@ -115,7 +164,8 @@ def RehandlesNumber(ship: List[List[List[dict[int, float, int]]]]):
     return total
 
 
-def BayMoment(ship: List[List[List[dict[int, float, int]]]], baySize: int):
+def BayMoment(ship: Ship):
+    baySize = len(ship)
     center_bay = (baySize - 1) / 2.0
     total_moment = 0.0
     total_weight = 0.0
@@ -136,7 +186,8 @@ def BayMoment(ship: List[List[List[dict[int, float, int]]]], baySize: int):
     return total_moment / total_weight
 
 
-def RowMoment(ship: List[List[List[Optional[Dict[str, float]]]]], rowSize: int) -> float:
+def RowMoment(ship: Ship) -> float:
+    rowSize = len(ship[0])
     center_row = (rowSize - 1) / 2.0
     total_moment = 0.0
     total_weight = 0.0
@@ -158,7 +209,7 @@ def RowMoment(ship: List[List[List[Optional[Dict[str, float]]]]], rowSize: int) 
     return total_moment / total_weight
 
 
-def TierMoment(ship: List[List[List[Optional[Dict[str, float]]]]]) -> float:
+def TierMoment(ship: Ship) -> float:
     total_moment = 0.0
     total_weight = 0.0
 
@@ -177,10 +228,10 @@ def TierMoment(ship: List[List[List[Optional[Dict[str, float]]]]]) -> float:
     return total_moment / total_weight
 
 
-def ContainerRamdom(number: int) -> dict[int, float, int]:
+def ContainerRamdom(number: int) -> List[Cont]:
 
     # Generating 250 containers starting from id 11
-    containers_250 = [
+    containers_250: List[Cont] = [
         {
             'id': i,
             'weight': round(random.uniform(1.0, 100.0), 1),
@@ -198,9 +249,13 @@ def calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
     for b, r in product(range(vessel.bays), range(vessel.rows)):
         stack = [vessel.get_slot_at(SlotCoord(b, r, t))
                  for t in range(vessel.tiers)]
-        filled = [s.container for s in stack if s.container]
+
+        def get(s: Slot | None): return s.container if s else None
+        filled: List[Optional[Container]] = [get(s) for s in stack if get(s)]
         for i in range(1, len(filled)):
-            if filled[i].dischargePort > filled[i-1].dischargePort:
+            curr = filled[i]
+            prev = filled[i-1]
+            if curr and prev and curr.dischargePort > prev.dischargePort:
                 rehandles += 1
 
     # 2. Moments
@@ -211,4 +266,32 @@ def calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
     # Cost Function
     cost = (rehandles * 1000.0) + (tier_moment * 0.1) + \
         (len(leftovers) * 5000.0)
+
     return cost
+
+
+def container_to_cont(c: Container | None) -> Optional[Cont]:
+    if not c:
+        return None
+
+    return {
+        'id': c.id,
+        'weight': c.weight,
+        'dest': c.dischargePort
+    }
+
+
+def vessel_to_ship(vessel: Vessel) -> Ship:
+    def getContainer(s: Slot | None):
+        if s is None:
+            return None
+        return s.container
+
+    ship: Ship = [[[container_to_cont(getContainer(vessel.get_slot_at(SlotCoord(b, r, t)))) for t in range(
+        vessel.tiers)] for r in range(vessel.rows)] for b in range(vessel.bays)]
+
+    return ship
+
+
+def ship_to_vessel(ship: Ship) -> Tuple[Vessel, List[Container]]:
+    return Vessel.from_ship(ship), []

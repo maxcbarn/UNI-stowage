@@ -1,14 +1,17 @@
-from collections import defaultdict
-from dataclasses import dataclass
 from random import seed
-from typing import List, Tuple
+from typing import List, Tuple, TypedDict
 
-from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range, Numeric
+from common import Vessel, Container, Slot, SlotCoord, Range, Numeric
 from itertools import product
 import argparse
 
 
 class PhysicsUtils:
+    class Moments(TypedDict):
+        bay: float
+        row: float
+        tier: float
+
     @staticmethod
     def calculate_rehandles(vessel: Vessel) -> int:
         """Counts how many times a later-port container sits on an earlier-port container."""
@@ -29,7 +32,7 @@ class PhysicsUtils:
         return total
 
     @staticmethod
-    def calculate_moments(vessel: Vessel) -> dict:
+    def calculate_moments(vessel: Vessel) -> Moments:
         """Calculates Center of Gravity deviations."""
         total_weight = 0.0
         moment_bay = 0.0
@@ -87,7 +90,7 @@ def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
     return score
 
 
-def heuristic_solver(containers: List[Container], vessel: Vessel) -> Tuple[List, List]:
+def heuristic_solver(containers: List[Container], vessel: Vessel) -> Tuple[List[Tuple[Container, Slot]], List[Container]]:
     """
     Approximative Solver (Deterministic).
     Uses Best-Fit logic: scans all valid slots and picks the one with the highest physics score.
@@ -96,8 +99,8 @@ def heuristic_solver(containers: List[Container], vessel: Vessel) -> Tuple[List,
     load_list = sorted(containers, key=lambda c: (
         c.dischargePort, c.weight), reverse=True)
 
-    plan = []
-    left_behind = []
+    plan: List[Tuple[Container, Slot]] = []
+    left_behind: List[Container] = []
 
     for container in load_list:
         best_slot = None
@@ -140,14 +143,13 @@ def gen_case(
         container_amount: Range[int],
         weight: Range[float],
         ports: Range[int],
-        args
 ):
 
-    ship = Vessel(bays(), rows(), tiers(), weight.end)
+    ship = Vessel(bays(), rows(), tiers())
 
     cargo_amt = container_amount()
 
-    cargo = [Container.genRandom(weight, ports, [20, 40], 0.8)
+    cargo = [Container.gen_random(weight, ports)
              for _ in range(cargo_amt)]
 
     print(
@@ -166,9 +168,6 @@ def gen_case(
 
     if left_behind:
         print(f"\n[WARNING] Could not stow {len(left_behind)} containers.")
-
-        reefer_left = sum(1 for c in left_behind if c.reefer)
-        print(f"   - Reefers left behind: {reefer_left}")
     else:
         print("\n[SUCCESS] All containers stowed.")
 
@@ -197,7 +196,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    def to_range(values: List[Numeric], is_float: bool = False) -> Range:
+    def to_range(values: List[Numeric], is_float: bool = False) -> Range[Numeric]:
         if len(values) == 1:
             start = values[0]
             if is_float:
@@ -221,7 +220,6 @@ def main() -> None:
             container_amount=to_range(args.containers),
             weight=to_range(args.weight, is_float=True),
             ports=to_range(args.ports),
-            args=args
         )
 
     except ValueError as e:

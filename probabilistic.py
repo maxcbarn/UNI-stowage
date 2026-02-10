@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import argparse
 import copy
 import random
+<<<<<<< HEAD
 <<<<<<< HEAD
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, TypeVar, Generic, Optional
@@ -167,6 +170,9 @@ class PhysicsUtils:
 # --- UPDATED HEURISTIC SCORING ---
 =======
 from typing import List, Tuple
+=======
+from typing import List, Optional, Tuple
+>>>>>>> c9faeeb ([Refac]: pylance strict)
 
 from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range
 
@@ -180,6 +186,7 @@ def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
     score = 0.0
     slot_below = None
     if slot.tier > 0:
+<<<<<<< HEAD
         slot_below = vessel.get_slot_at(
             SlotCoord(slot.bay, slot.row, slot.tier - 1))
 
@@ -204,6 +211,17 @@ def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
         if container.weight > slot_below.container.weight:
             score -= 5000.0
 
+=======
+        under = vessel.get_slot_at(
+            SlotCoord(slot.bay, slot.row, slot.tier - 1))
+        if under:
+            below = under.container
+            if below:
+                if container.dischargePort > below.dischargePort:
+                    score -= 10000.0
+                if container.weight > below.weight:
+                    score -= 5000.0
+>>>>>>> c9faeeb ([Refac]: pylance strict)
     return score
 
 <<<<<<< HEAD
@@ -216,9 +234,55 @@ def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
 >>>>>>> a1dc743 ([Feat]: common interface common.py)
 
 
+<<<<<<< HEAD
 def randomized_greedy_solver(containers: List[Container], vessel: Vessel, alpha: float) -> Tuple[List, List]:
     # Sort Phase
     load_list = sorted(containers, key=lambda c: (
+=======
+class MCTSNode:
+    def __init__(self, vessel_state: Vessel, remaining_cargo: List[Container], parent: Optional[MCTSNode] = None):
+        self.vessel: Vessel = vessel_state
+        self.cargo: List[Container] = remaining_cargo
+        self.parent: Optional[MCTSNode] = parent
+        self.children: List[MCTSNode] = []
+        self.visits: int = 0
+        self.value: float = 0.0
+
+        self.untried_moves: Optional[List[Tuple[Container, Slot]]] = None
+
+    @property
+    def is_terminal(self):
+        return len(self.cargo) == 0
+
+    @property
+    def is_fully_expanded(self):
+        return self.untried_moves is not None and len(self.untried_moves) == 0
+
+    def get_legal_moves(self) -> List[Tuple[Container, Slot]]:
+        """Identify the next container and top valid slots."""
+        if not self.cargo:
+            return []
+
+        # Strategy: Strict Ordering. We only try to place the NEXT container.
+        next_c = self.cargo[0]
+
+        candidates: List[Tuple[Slot, float]] = []
+        for s in self.vessel.slots.values():
+            if self.vessel.check_hard_constraints(next_c, s):
+                candidates.append((s, score_move(self.vessel, next_c, s)))
+
+        # Heuristic Pruning: Only consider top 5 slots to keep tree manageable
+        # This is critical for performance in Python
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        top_k = candidates[:5]
+
+        return [(next_c, x[0]) for x in top_k]
+
+
+def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations: int = 1000):
+    # Sort cargo once (Global Ordering Strategy) [cite: 151]
+    sorted_cargo = sorted(initial_cargo, key=lambda c: (
+>>>>>>> c9faeeb ([Refac]: pylance strict)
         c.dischargePort, c.weight), reverse=True)
     plan = []
     left_behind = []
@@ -242,7 +306,21 @@ def randomized_greedy_solver(containers: List[Container], vessel: Vessel, alpha:
         vessel.place(container, target_slot)
         plan.append((container, target_slot))
 
+<<<<<<< HEAD
     return plan, left_behind
+=======
+        # 1. SELECTION (Traverse down to a leaf)
+        # Use UCB1: node_val/visits + C * sqrt(ln(parent_visits)/visits)
+        while not node.is_terminal and node.is_fully_expanded:
+            def keyFunc(c: MCTSNode) -> float:
+                if not node:
+                    raise ValueError("node is None!")
+                if c.visits == 0:
+                    return float('inf')
+
+                return (c.value / c.visits) + 1.41 * math.sqrt(math.log(node.visits) / c.visits)
+            node = max(node.children, key=keyFunc)
+>>>>>>> c9faeeb ([Refac]: pylance strict)
 
 
 @dataclass
@@ -250,6 +328,7 @@ class PenaltyWeights:
     overstow: float
     stability: float  # Controls Beta (CoG) influence
 
+<<<<<<< HEAD
 
 def run_monte_carlo(args, initial_cargo, base_vessel, penalties):
     best_cost = float('inf')
@@ -262,6 +341,32 @@ def run_monte_carlo(args, initial_cargo, base_vessel, penalties):
         current_vessel = copy.deepcopy(base_vessel)
         plan, leftovers = randomized_greedy_solver(
             initial_cargo, current_vessel, alpha=args.alpha)
+=======
+                # Clone state for new node
+                new_vessel = copy.deepcopy(node.vessel)
+                s = new_vessel.get_slot_at(
+                    SlotCoord(slot.bay, slot.row, slot.tier))
+                if s:
+                    new_vessel.place(container, s)
+                    new_cargo = node.cargo[1:]
+
+                    child_node = MCTSNode(new_vessel, new_cargo, parent=node)
+                    node.children.append(child_node)
+                    node = child_node
+
+        # 3. SIMULATION (Rollout)
+        # Use Randomized Greedy logic to finish the plan from this node
+        sim_vessel = copy.deepcopy(node.vessel)
+        sim_cargo = list(node.cargo)
+        sim_leftovers: List[Container] = []
+
+        # Fast Greedy Rollout
+        for c in sim_cargo:
+            candidates: List[Tuple[Slot, float]] = []
+            for s in sim_vessel.slots.values():
+                if sim_vessel.check_hard_constraints(c, s):
+                    candidates.append((s, score_move(sim_vessel, c, s)))
+>>>>>>> c9faeeb ([Refac]: pylance strict)
 
         # METRIC CALCULATION (Matching MILP)
         rehandles = PhysicsUtils.calculate_rehandles(current_vessel)
@@ -284,7 +389,14 @@ def run_monte_carlo(args, initial_cargo, base_vessel, penalties):
             print(
                 f"  [Iter {i+1}] New Best Z: {cost:.2f} (Rehandles: {rehandles}, TierM: {moments['tier']:.2f})")
 
+<<<<<<< HEAD
     return best_metrics, best_vessel, best_cost
+=======
+        while node is not None:
+            node.visits += 1
+            node.value += reward
+            node = node.parent
+>>>>>>> c9faeeb ([Refac]: pylance strict)
 
 # --- MAIN CLI ---
 
@@ -306,16 +418,32 @@ if __name__ == "__main__":
     if args.seed:
         random.seed(args.seed)
 
+<<<<<<< HEAD
     def to_range(vals, is_float=False):
+=======
+    def ri(vals: List[int], f: bool = False):
+>>>>>>> c9faeeb ([Refac]: pylance strict)
         if len(vals) == 1:
             return Range(vals[0], vals[0] if is_float else vals[0]+1)
         return Range(vals[0], vals[1])
 
+<<<<<<< HEAD
     vessel = Vessel(to_range(args.bays)(), to_range(args.rows)
                     (), to_range(args.tiers)(), args.weight[-1])
     gen_amt = to_range(args.containers)()
     cargo = [Container.genRandom(to_range(args.weight, True), to_range(
         args.ports)) for _ in range(gen_amt)]
+=======
+    def rf(vals: List[float], f: bool = False):
+        if len(vals) == 1:
+            return Range(vals[0], vals[0] if f else vals[0]+1)
+        return Range(vals[0], vals[1])
+
+    vessel = Vessel(ri(args.bays)(), ri(args.rows)(),
+                    ri(args.tiers)())
+    cargo = [Container.gen_random(rf(args.weight, True), ri(
+        [1, 5])) for _ in range(ri(args.containers)())]
+>>>>>>> c9faeeb ([Refac]: pylance strict)
 
     # Weights: Overstow is expensive (ALPHA), Stability is secondary (BETA)
     penalties = PenaltyWeights(overstow=1000.0, stability=10.0)
@@ -329,6 +457,7 @@ if __name__ == "__main__":
         f"CoG Deviations: Bay={metrics['moments']['bay']:.2f}, Row={metrics['moments']['row']:.2f}, Tier={metrics['moments']['tier']:.2f}")
     print(f"Unstowed Containers: {metrics['left']}")
 
+<<<<<<< HEAD
     # Visual check of Balance
     print("\n--- BALANCE CHECK (Center Row) ---")
     mid_row = (vessel.rows - 1) // 2
@@ -339,3 +468,19 @@ if __name__ == "__main__":
             if s and s.container:
                 filled_weight += s.container.weight
         print(f"Bay {b} Row {mid_row} (Center): {filled_weight:.0f} kg")
+=======
+    print("\n--- MCTS RESULT ---")
+    print(f"Final Cost: {cost:.0f}")
+
+    # Display simple plan
+    count = 0
+    if best_ves:
+        for s in best_ves.slots.values():
+            if s.container:
+                count += 1
+        print(f"Stowed: {count}/{len(cargo)}")
+
+
+if __name__ == "__main__":
+    main()
+>>>>>>> c9faeeb ([Refac]: pylance strict)

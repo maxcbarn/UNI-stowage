@@ -1,0 +1,3 @@
+pulp
+deap
+numpy<2.0

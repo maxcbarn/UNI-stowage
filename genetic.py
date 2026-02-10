@@ -5,15 +5,14 @@
 
 import random
 import array
-import math
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple
 
 # DEAP
 from deap import base, creator, tools, algorithms
 
 # Import metric calculators from your common.py
 # Ensure common.py has these functions: RehandlesNumber, BayMoment, RowMoment, TierMoment
-from common import RehandlesNumber, BayMoment, RowMoment, TierMoment
+from common import Cont, CostReport, Ship
 
 # ------------------------------------------------------------------------------
 # 1. Helper Functions
@@ -30,15 +29,15 @@ def slots_from_index(idx: int, num_bays: int, num_rows: int, max_tiers: int) -> 
     return b, r, t
 
 
-def build_ship_from_individual(individual: List[int], containers: List[Dict], num_bays: int, num_rows: int, max_tiers: int):
+def build_ship_from_individual(individual: List[int], containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int):
     """
     Constructs the 3D ship matrix from the genetic individual.
     Strategy: Attempt to place container at 'individual[i]' slot. 
     If occupied/invalid, search linearly for the next open slot to ensure validity.
     """
     # Initialize empty ship: Bay -> Row -> Tier
-    ship = [[[None for _ in range(max_tiers)]
-             for _ in range(num_rows)] for _ in range(num_bays)]
+    ship: Ship = [[[None for _ in range(max_tiers)]
+                   for _ in range(num_rows)] for _ in range(num_bays)]
 
     # Track occupied slots to avoid overwriting
     # Linear size of the ship
@@ -87,7 +86,7 @@ def build_ship_from_individual(individual: List[int], containers: List[Dict], nu
 # ------------------------------------------------------------------------------
 
 
-def setup_toolbox(num_containers, num_bays, num_rows, max_tiers):
+def setup_toolbox(num_containers: int, num_bays: int, num_rows: int, max_tiers: int):
     # Minimization problem for 4 objectives
     # Weights are negative because we want to MINIMIZE all values
     if not hasattr(creator, "FitnessMin"):
@@ -126,8 +125,9 @@ def evaluate_stowage(individual, containers, num_bays, num_rows, max_tiers):
 
     # 2. Calculate Metrics using common.py functions
     # Note: We must handle cases where common functions expect specific formats
+    cost = CostReport(ship)
 
-    rehandles = RehandlesNumber(ship)
+    rehandles = cost.rehandles
 
     # Calculate moments.
     # Note: We divide by size to normalize, or just return raw moment.
@@ -135,10 +135,10 @@ def evaluate_stowage(individual, containers, num_bays, num_rows, max_tiers):
     # If the helper returns the actual CoG position, we want abs(CoG - Center).
     # Assuming common.py returns the CoG value directly:
 
-    b_mom = abs(BayMoment(ship, num_bays))
-    r_mom = abs(RowMoment(ship, num_rows))
+    b_mom = abs(cost.bay_moment)
+    r_mom = abs(cost.row_moment)
     # We usually want Min Tier Moment (lower CoG), so no Abs() if it is just 'Sum(Weight*Height)'
-    t_mom = abs(TierMoment(ship))
+    t_mom = abs(cost.tier_moment)
 
     # For Tier Moment, strictly speaking, lower is better for stability.
     # If TierMoment returns a "center" (like 2.5), we want to minimize it.
@@ -150,7 +150,7 @@ def evaluate_stowage(individual, containers, num_bays, num_rows, max_tiers):
 # ------------------------------------------------------------------------------
 
 
-def solve_stowage_genetic(containers: List[Dict], num_bays: int, num_rows: int, max_tiers: int,
+def solve_stowage_genetic(containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int,
                           pop_size=100, n_gen=50):
 
     toolbox = setup_toolbox(len(containers), num_bays, num_rows, max_tiers)
@@ -199,10 +199,4 @@ def solve_stowage_genetic(containers: List[Dict], num_bays: int, num_rows: int, 
     best_ship = build_ship_from_individual(
         best_ind, containers, num_bays, num_rows, max_tiers)
 
-    return {
-        "rehandles": RehandlesNumber(best_ship),
-        "bay_moment": BayMoment(best_ship, num_bays),
-        "row_moment": RowMoment(best_ship, num_rows),
-        "tier_moment": TierMoment(best_ship)
-
-    }
+    return CostReport(best_ship)
