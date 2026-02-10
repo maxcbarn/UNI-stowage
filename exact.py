@@ -10,7 +10,7 @@ def solve_stowage_3d_min_rehandles_with_cog(
     max_tiers: int,
     ALPHA: float = 1.0,   # weight for rehandles (primary objective)
     BETA: float = 0.01    # weight for CoG deviation (secondary)
-) -> CostReport:
+) -> Ship:
     """
     containers: list of dicts with keys 'id', 'weight', 'dest'
     returns dict containing: status, rehandles (int), weighted_objective (float),
@@ -119,4 +119,4 @@ def solve_stowage_3d_min_rehandles_with_cog(
                     if pulp.value(x[b][r_][t][i]) == 1:
                         ship[b][r_][t-1] = containers[i]
 
-    return CostReport(ship)
+    return ship

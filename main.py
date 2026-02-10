@@ -2,9 +2,6 @@ from genetic import *
 from generateContainers import ContainerRandom
 from common import *
 from exact import *
-<< << << < HEAD
-== == == =
->>>>>> > c2f9b3268707939bfe3c7d254a67c83b08d5efbc
 
 # fazer test cases
 

@@ -31,6 +31,8 @@ def main():
         file.write(str(ContainerRandom(20)))
     with open("containers/containers-25.txt", "w") as file:
         file.write(str(ContainerRandom(25)))
+    with open("containers/containers-30.txt", "w") as file:
+        file.write(str(ContainerRandom(30)))
 
     with open("containers/containers-50.txt", "w") as file:
         file.write(str(ContainerRandom(50)))
