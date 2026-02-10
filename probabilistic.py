@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import argparse
 import copy
 import math
 import random
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range
 
@@ -20,13 +22,15 @@ def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
     score -= dist_row * (container.weight / 1000.0)
     # Overstowage Prevention
     if slot.tier > 0:
-        below = vessel.get_slot_at(
-            SlotCoord(slot.bay, slot.row, slot.tier - 1)).container
-        if below:
-            if container.dischargePort > below.dischargePort:
-                score -= 10000.0
-            if container.weight > below.weight:
-                score -= 5000.0
+        under = vessel.get_slot_at(
+            SlotCoord(slot.bay, slot.row, slot.tier - 1))
+        if under:
+            below = under.container
+            if below:
+                if container.dischargePort > below.dischargePort:
+                    score -= 10000.0
+                if container.weight > below.weight:
+                    score -= 5000.0
     return score
 
 
@@ -36,14 +40,15 @@ def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
 
 
 class MCTSNode:
-    def __init__(self, vessel_state: Vessel, remaining_cargo: List[Container], parent=None):
-        self.vessel = vessel_state
-        self.cargo = remaining_cargo  # Cargo yet to be placed
-        self.parent = parent
+    def __init__(self, vessel_state: Vessel, remaining_cargo: List[Container], parent: Optional[MCTSNode] = None):
+        self.vessel: Vessel = vessel_state
+        self.cargo: List[Container] = remaining_cargo
+        self.parent: Optional[MCTSNode] = parent
         self.children: List[MCTSNode] = []
-        self.visits = 0
-        self.value = 0.0  # Cumulative reward
-        self.untried_moves = None  # To be populated
+        self.visits: int = 0
+        self.value: float = 0.0
+
+        self.untried_moves: Optional[List[Tuple[Container, Slot]]] = None
 
     @property
     def is_terminal(self):
@@ -61,7 +66,7 @@ class MCTSNode:
         # Strategy: Strict Ordering. We only try to place the NEXT container.
         next_c = self.cargo[0]
 
-        candidates = []
+        candidates: List[Tuple[Slot, float]] = []
         for s in self.vessel.slots.values():
             if self.vessel.check_hard_constraints(next_c, s):
                 candidates.append((s, score_move(self.vessel, next_c, s)))
@@ -92,8 +97,14 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
         # 1. SELECTION (Traverse down to a leaf)
         # Use UCB1: node_val/visits + C * sqrt(ln(parent_visits)/visits)
         while not node.is_terminal and node.is_fully_expanded:
-            node = max(node.children, key=lambda c: (c.value / c.visits) +
-                       1.41 * math.sqrt(math.log(node.visits) / c.visits))
+            def keyFunc(c: MCTSNode) -> float:
+                if not node:
+                    raise ValueError("node is None!")
+                if c.visits == 0:
+                    return float('inf')
+
+                return (c.value / c.visits) + 1.41 * math.sqrt(math.log(node.visits) / c.visits)
+            node = max(node.children, key=keyFunc)
 
         # 2. EXPANSION (Add a new child)
         if not node.is_terminal and not node.is_fully_expanded:
@@ -105,23 +116,25 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
 
                 # Clone state for new node
                 new_vessel = copy.deepcopy(node.vessel)
-                new_vessel.place(container, new_vessel.get_slot_at(
-                    SlotCoord(slot.bay, slot.row, slot.tier)))
-                new_cargo = node.cargo[1:]  # Pop first item
+                s = new_vessel.get_slot_at(
+                    SlotCoord(slot.bay, slot.row, slot.tier))
+                if s:
+                    new_vessel.place(container, s)
+                    new_cargo = node.cargo[1:]
 
-                child_node = MCTSNode(new_vessel, new_cargo, parent=node)
-                node.children.append(child_node)
-                node = child_node
+                    child_node = MCTSNode(new_vessel, new_cargo, parent=node)
+                    node.children.append(child_node)
+                    node = child_node
 
         # 3. SIMULATION (Rollout)
         # Use Randomized Greedy logic to finish the plan from this node
         sim_vessel = copy.deepcopy(node.vessel)
         sim_cargo = list(node.cargo)
-        sim_leftovers = []
+        sim_leftovers: List[Container] = []
 
         # Fast Greedy Rollout
         for c in sim_cargo:
-            candidates = []
+            candidates: List[Tuple[Slot, float]] = []
             for s in sim_vessel.slots.values():
                 if sim_vessel.check_hard_constraints(c, s):
                     candidates.append((s, score_move(sim_vessel, c, s)))
@@ -147,7 +160,6 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
             print(
                 f"  > Iter {i}: New Best Cost {cost:.0f} (Left: {len(sim_leftovers)})")
 
-        # Propagate up
         while node is not None:
             node.visits += 1
             node.value += reward
@@ -174,15 +186,20 @@ def main():
 
     random.seed(args.seed)
 
-    def r(vals, f=False):
+    def ri(vals: List[int], f: bool = False):
         if len(vals) == 1:
             return Range(vals[0], vals[0] if f else vals[0]+1)
         return Range(vals[0], vals[1])
 
-    vessel = Vessel(r(args.bays)(), r(args.rows)(),
-                    r(args.tiers)(), args.weight[-1])
-    cargo = [Container.genRandom(r(args.weight, True), r(
-        [1, 5]), [20, 40], 0.8) for _ in range(r(args.containers)())]
+    def rf(vals: List[float], f: bool = False):
+        if len(vals) == 1:
+            return Range(vals[0], vals[0] if f else vals[0]+1)
+        return Range(vals[0], vals[1])
+
+    vessel = Vessel(ri(args.bays)(), ri(args.rows)(),
+                    ri(args.tiers)())
+    cargo = [Container.gen_random(rf(args.weight, True), ri(
+        [1, 5])) for _ in range(ri(args.containers)())]
 
     print(
         f"Initialized MCTS. Ship: {vessel.capacity} slots. Cargo: {len(cargo)} items.")
@@ -193,10 +210,11 @@ def main():
 
     # Display simple plan
     count = 0
-    for s in best_ves.slots.values():
-        if s.container:
-            count += 1
-    print(f"Stowed: {count}/{len(cargo)}")
+    if best_ves:
+        for s in best_ves.slots.values():
+            if s.container:
+                count += 1
+        print(f"Stowed: {count}/{len(cargo)}")
 
 
 if __name__ == "__main__":

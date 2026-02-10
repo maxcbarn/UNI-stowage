@@ -1,18 +1,23 @@
 import random
+from typing import List
 
-def ContainerRamdom(number: int) -> dict[int,float,int]:
+from common import Cont
+
+
+def ContainerRamdom(number: int) -> List[Cont]:
 
     # Generating 250 containers starting from id 11
-    containers_250 = [
+    containers_250: List[Cont] = [
         {
-            'id': i, 
-            'weight': round(random.uniform(1.0, 100.0), 1), 
+            'id': i,
+            'weight': round(random.uniform(1.0, 100.0), 1),
             'dest': random.randint(1, 5)
-        } 
+        }
         for i in range(1, number + 1)
     ]
 
     return containers_250
+
 
 def main():
     with open("containers/containers-5.txt", "w") as file:
@@ -25,7 +30,7 @@ def main():
         file.write(str(ContainerRamdom(20)))
     with open("containers/containers-25.txt", "w") as file:
         file.write(str(ContainerRamdom(25)))
-        
+
     with open("containers/containers-50.txt", "w") as file:
         file.write(str(ContainerRamdom(50)))
     with open("containers/containers-100.txt", "w") as file:
@@ -38,5 +43,6 @@ def main():
         file.write(str(ContainerRamdom(250)))
     with open("containers/containers-1000.txt", "w") as file:
         file.write(str(ContainerRamdom(1000)))
-        
+
+
 main()
