@@ -1,6 +1,10 @@
+from genetic import *
+from generateContainers import ContainerRandom
 from common import *
 from exact import *
-from genetic import *
+<< << << < HEAD
+== == == =
+>>>>>> > c2f9b3268707939bfe3c7d254a67c83b08d5efbc
 
 # fazer test cases
 
@@ -39,7 +43,7 @@ def main():
     num_rows = 2
     max_tiers = 8
 
-    containerR = ContainerRamdom(10)
+    containerR = ContainerRandom(10)
     print(containerR)
     # You can change ALPHA/BETA to tune priority between rehandles and balance
     res = solve_stowage_3d_min_rehandles_with_cog(

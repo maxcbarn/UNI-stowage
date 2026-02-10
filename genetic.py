@@ -3,12 +3,14 @@
 # Objectives: minimize (rehandles, bay_moment, row_moment, tier_moment)
 # Reference: Container Vessel Stowage Planning System using Genetic Algorithm
 
+from common import Cont, CostReport, Ship
+from deap import base, creator, tools, algorithms
+from typing import List, Tuple
 import random
 import array
 from typing import List, Tuple
 
 # DEAP
-from deap import base, creator, tools, algorithms
 
 # Import metric calculators from your common.py
 # Ensure common.py has these functions: RehandlesNumber, BayMoment, RowMoment, TierMoment
@@ -69,7 +71,6 @@ def build_ship_from_individual(individual: List[int], containers: List[Cont], nu
                 if ship[b][r][t-1] is None:
                     continue  # Cannot float in air
 
-            # Check if spot is empty
             if ship[b][r][t] is None:
                 ship[b][r][t] = container
                 placed = True
