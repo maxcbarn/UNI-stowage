@@ -3,16 +3,25 @@
 # Objectives: minimize (rehandles, bay_moment, row_moment, tier_moment)
 # Reference: Container Vessel Stowage Planning System using Genetic Algorithm
 
+from common import RehandlesNumber, BayMoment, RowMoment, TierMoment
+from common import Cont, CostReport, Ship
+from deap import base, creator, tools, algorithms
+from typing import List, Dict, Tuple, Optional
+import math
+from typing import List, Tuple
 import random
 import array
-from typing import List, Tuple
+<< << << < HEAD
+== == == =
+>>>>>> > 45ff7aab43b2a5dea7737bb2753cead4d59a9918
 
 # DEAP
-from deap import base, creator, tools, algorithms
 
 # Import metric calculators from your common.py
 # Ensure common.py has these functions: RehandlesNumber, BayMoment, RowMoment, TierMoment
-from common import Cont, CostReport, Ship
+<< << << < HEAD
+== == == =
+>>>>>> > 45ff7aab43b2a5dea7737bb2753cead4d59a9918
 
 # ------------------------------------------------------------------------------
 # 1. Helper Functions

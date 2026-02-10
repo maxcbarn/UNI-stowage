@@ -1,13 +1,22 @@
 from __future__ import annotations
+from typing import List, Optional, Tuple
+from itertools import product
+from typing import Dict, List, Tuple, TypeVar, Generic, Optional
+from dataclasses import dataclass, field
 
 import argparse
 import copy
+import math
 import random
-<<<<<<< HEAD
-<<<<<<< HEAD
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, TypeVar, Generic, Optional
-from itertools import product
+from typing import List, Tuple
+
+from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range
+
+# ==========================================
+# 1. HEURISTIC ENGINE (Used for Expansion & Rollout)
+# ==========================================
+<< << << < HEAD
+<< << << < HEAD
 
 # --- DATA STRUCTURES ---
 
@@ -167,26 +176,26 @@ class PhysicsUtils:
             "tier": moment_tier / total_weight
         }
 
-# --- UPDATED HEURISTIC SCORING ---
-=======
-from typing import List, Tuple
-=======
-from typing import List, Optional, Tuple
->>>>>>> c9faeeb ([Refac]: pylance strict)
 
-from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range
+# --- UPDATED HEURISTIC SCORING ---
+== == == =
+== == == =
+>>>>>> > c9faeeb([Refac]: pylance strict)
+
 
 # ==========================================
 # 1. HEURISTIC ENGINE (Used for Expansion & Rollout)
 # ==========================================
->>>>>>> a1dc743 ([Feat]: common interface common.py)
+>>>>>> > a1dc743([Feat]: common interface common.py)
 
 
 def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
     score = 0.0
     slot_below = None
     if slot.tier > 0:
-<<<<<<< HEAD
+
+
+<< << << < HEAD
         slot_below = vessel.get_slot_at(
             SlotCoord(slot.bay, slot.row, slot.tier - 1))
 
@@ -372,20 +381,24 @@ def run_monte_carlo(args, initial_cargo, base_vessel, penalties):
         rehandles = PhysicsUtils.calculate_rehandles(current_vessel)
         moments = PhysicsUtils.calculate_moments(current_vessel)
 
-        # COST FUNCTION: Z = Alpha*Rehandles + Beta*Moments
-        # We use penalties.overstow for Alpha, penalties.stability for Beta
-        cost = (rehandles * penalties.overstow) + \
-               (abs(moments['bay']) * penalties.stability) + \
-               (abs(moments['row']) * penalties.stability) + \
-               (moments['tier'] * penalties.stability)
+            if candidates:
+                # Greedy choice (Top 1) for speed in rollout
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                target = candidates[0][0]
+                sim_vessel.place(c, target)
+            else:
+                sim_leftovers.append(c)
 
-        cost += len(leftovers) * 5000.0  # Operational penalty
+        # 4. BACKPROPAGATION
+        # Convert Cost to Reward (Lower cost = Higher Reward)
+        # Using simple normalization 100000 / cost
+        cost = calculate_cost(sim_vessel, sim_leftovers)
+        reward = 1.0 / (1.0 + cost)
 
-        if cost < best_cost:
-            best_cost = cost
-            best_vessel = current_vessel
-            best_metrics = {"rehandles": rehandles,
-                            "moments": moments, "left": len(leftovers)}
+        # Update Best Found
+        if cost < min_global_cost:
+            min_global_cost = cost
+            best_global_plan = sim_vessel
             print(
                 f"  [Iter {i+1}] New Best Z: {cost:.2f} (Rehandles: {rehandles}, TierM: {moments['tier']:.2f})")
 
@@ -398,25 +411,24 @@ def run_monte_carlo(args, initial_cargo, base_vessel, penalties):
             node = node.parent
 >>>>>>> c9faeeb ([Refac]: pylance strict)
 
-# --- MAIN CLI ---
+# ==========================================
+# 4. CLI RUNNER
+# ==========================================
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+def main():
+    parser = argparse.ArgumentParser(description="MCTS Stowage Solver")
     parser.add_argument("--bays", nargs="+", type=int, default=[5])
     parser.add_argument("--rows", nargs="+", type=int, default=[5])
     parser.add_argument("--tiers", nargs="+", type=int, default=[5])
     parser.add_argument("--containers", nargs="+", type=int, default=[50])
     parser.add_argument("--weight", nargs="+", type=float,
                         default=[1000.0, 30000.0])
-    parser.add_argument("--ports", nargs="+", type=int, default=[1, 5])
-    parser.add_argument("--iterations", type=int, default=10)
-    parser.add_argument("--alpha", type=float, default=0.15)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--iterations", type=int, default=100)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    if args.seed:
-        random.seed(args.seed)
+    random.seed(args.seed)
 
 <<<<<<< HEAD
     def to_range(vals, is_float=False):
@@ -424,7 +436,7 @@ if __name__ == "__main__":
     def ri(vals: List[int], f: bool = False):
 >>>>>>> c9faeeb ([Refac]: pylance strict)
         if len(vals) == 1:
-            return Range(vals[0], vals[0] if is_float else vals[0]+1)
+            return Range(vals[0], vals[0] if f else vals[0]+1)
         return Range(vals[0], vals[1])
 
 <<<<<<< HEAD

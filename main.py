@@ -1,6 +1,6 @@
 from common import *
 from exact import *
-from aproximative.FFD import *
+from generateContainers import ContainerRandom
 from genetic import *
 
 # fazer test cases
@@ -20,6 +20,7 @@ from genetic import *
 
 # 10 X 10 X 10 = 1000 - 1000
 
+
 def main():
     # Example containers (id, weight, dest)
     containers = [
@@ -35,63 +36,20 @@ def main():
         {'id': 10, 'weight': 8.0, 'dest': 1},
     ]
 
-<<<<<<< HEAD
-    num_bays = 20
-    num_rows = 10
-    max_tiers = 5
-
-    # You can change ALPHA/BETA to tune priority between rehandles and balance
-    res = solve_stowage_3d_min_rehandles_with_cog(
-        ContainerRamdom(60), num_bays, num_rows, max_tiers,
-        ALPHA=1.0, BETA=0.05
-    )
-
-    print(res)
-
-
-main()
-=======
     num_bays = 5
     num_rows = 2
     max_tiers = 8
 
-    containerR = ContainerRamdom(10);
-    print( containerR )
+    containerR = ContainerRandom(10)
+    print(containerR)
     # You can change ALPHA/BETA to tune priority between rehandles and balance
     res = solve_stowage_3d_min_rehandles_with_cog(
         containerR, num_bays, num_rows, max_tiers,
         ALPHA=1.0, BETA=0.05
-    ) 
-    print( res );
+    )
+    print(res)
     res = solve_stowage_genetic(containerR, num_bays, num_rows, max_tiers)
-    print( res );
-    
-    
+    print(res)
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+
 main()
->>>>>>> 93f0091 (Genetic Semi Done)

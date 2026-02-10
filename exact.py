@@ -112,6 +112,8 @@ def solve_stowage_3d_min_rehandles_with_cog(
 
     ship: Ship = [[[None for _ in T] for _ in R] for _ in B]
 
+    ship = [[[None for _ in T] for _ in R] for _ in B]
+
     for i in C:
         for b in B:
             for r_ in R:
