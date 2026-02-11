@@ -118,8 +118,7 @@ def heuristic_solver(containers: List[Container], vessel: Vessel) -> Tuple[List[
             plan.append((container, best_slot))
         else:
             left_behind.append(container)
-
-    return plan, left_behind
+    return vessel, left_behind
 
 
 def print_fitness_report(vessel: Vessel):

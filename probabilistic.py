@@ -81,15 +81,14 @@ class MCTSNode:
 
 def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations: int = 1000):
     # Sort cargo once (Global Ordering Strategy) [cite: 151]
-    sorted_cargo = sorted(initial_cargo, key=lambda c: (
-        c.dischargePort, c.weight), reverse=True)
+    sorted_cargo = sorted(initial_cargo, key=lambda c: (c.dischargePort, c.weight), reverse=True)
 
     root = MCTSNode(copy.deepcopy(root_vessel), sorted_cargo)
 
     best_global_plan = None
     min_global_cost = float('inf')
 
-    print(f"--- MCTS Start: {iterations} Iterations ---")
+    # print(f"--- MCTS Start: {iterations} Iterations ---")
 
     for i in range(iterations):
         node = root
@@ -157,8 +156,7 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
         if cost < min_global_cost:
             min_global_cost = cost
             best_global_plan = sim_vessel
-            print(
-                f"  > Iter {i}: New Best Cost {cost:.0f} (Left: {len(sim_leftovers)})")
+            #print( f"  > Iter {i}: New Best Cost {cost:.0f} (Left: {len(sim_leftovers)})")
 
         while node is not None:
             node.visits += 1

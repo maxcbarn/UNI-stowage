@@ -10,7 +10,7 @@ def solve_stowage_3d_min_rehandles_with_cog(
     num_rows: int,
     max_tiers: int,
     ALPHA: float = 1.0,   # weight for rehandles (primary objective)
-    BETA: float = 0.01    # weight for CoG deviation (secondary)
+    BETA: float = 0.5    # weight for CoG deviation (secondary)
 ) -> Ship:
     """
     containers: list of dicts with keys 'id', 'weight', 'dest'

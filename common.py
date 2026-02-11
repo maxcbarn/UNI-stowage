@@ -245,7 +245,7 @@ def ContainerRamdom(number: int) -> List[Cont]:
 
 def calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
     # 1. Rehandles
-    rehandles = 0
+    """ rehandles = 0
     for b, r in product(range(vessel.bays), range(vessel.rows)):
         stack = [vessel.get_slot_at(SlotCoord(b, r, t))
                  for t in range(vessel.tiers)]
@@ -256,16 +256,17 @@ def calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
             curr = filled[i]
             prev = filled[i-1]
             if curr and prev and curr.dischargePort > prev.dischargePort:
-                rehandles += 1
+                rehandles += 1 """
 
     # 2. Moments
     # (Simplified for MCTS speed: just track Stability)
-    tier_moment = sum(
-        s.tier * s.container.weight for s in vessel.slots.values() if s.container)
+    """ tier_moment = sum(
+        s.tier * s.container.weight for s in vessel.slots.values() if s.container) """
+
+    ship = vessel_to_ship( vessel )
 
     # Cost Function
-    cost = (rehandles * 1000.0) + (tier_moment * 0.1) + \
-        (len(leftovers) * 5000.0)
+    cost = RehandlesNumber( ship ) + abs(BayMoment( ship )) + abs(RowMoment( ship )) + abs(TierMoment( ship ))
 
     return cost
 
@@ -295,3 +296,6 @@ def vessel_to_ship(vessel: Vessel) -> Ship:
 
 def ship_to_vessel(ship: Ship) -> Tuple[Vessel, List[Container]]:
     return Vessel.from_ship(ship), []
+
+def cont_to_containter(conts: List[Cont]) -> List[Container]:
+    return [Container(c['weight'], c['dest']) for c in conts]
