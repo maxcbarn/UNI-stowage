@@ -4,169 +4,423 @@ import argparse
 import copy
 import math
 import random
-from typing import List, Optional, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 
 from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range
 
 # ==========================================
-# 1. HEURISTIC ENGINE (Used for Expansion & Rollout)
+# 1. SPATIAL INDEX
 # ==========================================
 
 
-def score_move(vessel: Vessel, container: Container, slot: Slot) -> float:
+class FreeTopsIndex:
+    """
+    OPT-1: Replaces the O(B×R×T) slot scan with an O(B×R) structure.
+
+    Invariant: free_tops[(bay, row)] == the lowest free tier in that column,
+    or the key is absent if the column is full.
+
+    Because stacking is always bottom-up, the only valid placement per column
+    is always exactly this one tier — no need to check any other tier in the
+    column, and no need to visit occupied slots at all.
+    """
+
+    def __init__(self, vessel: Vessel) -> None:
+        self.free_tops: Dict[Tuple[int, int], int] = {}
+        self._max_tier: Dict[Tuple[int, int], int] = {}
+
+        col_tiers: Dict[Tuple[int, int], List[int]] = defaultdict(list)
+        for slot in vessel.slots.values():
+            col = (slot.bay, slot.row)
+            col_tiers[col].append(slot.tier)
+
+        for col, tiers in col_tiers.items():
+            self._max_tier[col] = max(tiers)
+            self.free_tops[col] = 0  # all empty at start
+
+    def place(self, bay: int, row: int) -> None:
+        """Mark the current free top as occupied and advance the pointer."""
+        col = (bay, row)
+        tier = self.free_tops.get(col)
+        if tier is None:
+            return
+        next_tier = tier + 1
+        if next_tier > self._max_tier[col]:
+            del self.free_tops[col]  # column now full
+        else:
+            self.free_tops[col] = next_tier
+
+    def undo(self, bay: int, row: int) -> None:
+        """Retreat the free-top pointer (undo a placement)."""
+        col = (bay, row)
+        current = self.free_tops.get(col)
+        if current is None:
+            self.free_tops[col] = self._max_tier[col]
+        else:
+            self.free_tops[col] = current - 1
+
+    def candidates(self) -> List[Tuple[int, int, int]]:
+        """Return (bay, row, tier) for every column that has a free slot."""
+        return [(bay, row, tier) for (bay, row), tier in self.free_tops.items()]
+
+
+# ==========================================
+# 2. HEURISTIC ENGINE (TIERED)
+# ==========================================
+
+
+def score_move_heavy(
+    vessel: Vessel,
+    container: Container,
+    slot: Slot,
+    crane_cache: Dict[int, int],  # OPT-2: pre-computed per-bay counts
+) -> float:
+    """
+    HEAVY Heuristic: Used for Tree Expansion.
+    Includes: Stability, Crane Intensity (cached), Hatch Overstow.
+    """
     score = 0.0
-    # Stability: Lower is better
+
+    # 1. Stability
     score -= (slot.tier * container.weight) / 1000.0
-    # Balance: Center is better
-    dist_row = abs(slot.row - (vessel.rows - 1)/2.0)
+    dist_row = abs(slot.row - (vessel.rows - 1) / 2.0)
     score -= dist_row * (container.weight / 1000.0)
-    # Overstowage Prevention
+
+    # 2. Crane Intensity — OPT-2: O(1) lookup instead of O(B×R×T) scan
+    score -= crane_cache.get(slot.bay, 0) * 5.0
+
+    # 3. Blocking & Overstowage
     if slot.tier > 0:
         under = vessel.get_slot_at(
             SlotCoord(slot.bay, slot.row, slot.tier - 1))
-        if under:
+        if under and under.container:
             below = under.container
-            if below:
-                if container.dischargePort > below.dischargePort:
-                    score -= 10000.0
-                if container.weight > below.weight:
-                    score -= 5000.0
+            if container.dischargePort > below.dischargePort:
+                score -= 10000.0
+            if container.weight > below.weight:
+                score -= 5000.0
     return score
 
 
+def build_crane_cache(vessel: Vessel) -> Dict[int, int]:
+    """OPT-2: Build bay->count dict once rather than scanning on every call."""
+    cache: Dict[int, int] = defaultdict(int)
+    for slot in vessel.slots.values():
+        if slot.container is not None:
+            cache[slot.bay] += 1
+    return cache
+
+
 # ==========================================
-# 3. MONTE CARLO TREE SEARCH (MCTS)
+# 3. BAY PRE-ASSIGNMENT (OPT-4)
+# ==========================================
+
+
+def assign_preferred_bays(
+    container: Container,
+    vessel: Vessel,
+    free_tops: FreeTopsIndex,
+    top_k: int = 3,
+) -> Set[int]:
+    """
+    OPT-4: Restrict MCTS candidates to the top-k bays most aligned with
+    the container's discharge port, dramatically shrinking the branching
+    factor before scoring begins.
+
+    Each bay is scored by how close its current average discharge port is
+    to the container's discharge port. Empty bays are treated as neutral.
+    """
+    bay_scores: Dict[int, float] = defaultdict(float)
+    bay_counts: Dict[int, int] = defaultdict(int)
+
+    for slot in vessel.slots.values():
+        if slot.container is not None:
+            bay_scores[slot.bay] += slot.container.dischargePort
+            bay_counts[slot.bay] += 1
+
+    free_bays: Set[int] = {bay for (bay, _row) in free_tops.free_tops}
+
+    scored: List[Tuple[float, int]] = []
+    for bay in free_bays:
+        if bay_counts[bay] > 0:
+            avg_dp = bay_scores[bay] / bay_counts[bay]
+            affinity = -abs(avg_dp - container.dischargePort)
+        else:
+            affinity = 0.0  # empty bay: neutral
+        scored.append((affinity, bay))
+
+    scored.sort(reverse=True)
+    return {bay for _, bay in scored[:top_k]}
+
+
+# ==========================================
+# 4. MONTE CARLO TREE SEARCH
 # ==========================================
 
 
 class MCTSNode:
-    def __init__(self, vessel_state: Vessel, remaining_cargo: List[Container], parent: Optional[MCTSNode] = None):
-        self.vessel: Vessel = vessel_state
-        self.cargo: List[Container] = remaining_cargo
-        self.parent: Optional[MCTSNode] = parent
+    def __init__(
+        self,
+        parent: Optional[MCTSNode] = None,
+        move: Optional[Tuple[Container, SlotCoord]] = None,
+        cargo_index: int = 0,
+    ):
+        self.parent = parent
+        self.move = move  # (Container, SlotCoord)
+        self.cargo_index = cargo_index
         self.children: List[MCTSNode] = []
         self.visits: int = 0
         self.value: float = 0.0
-
-        self.untried_moves: Optional[List[Tuple[Container, Slot]]] = None
-
-    @property
-    def is_terminal(self):
-        return len(self.cargo) == 0
+        self.untried_moves: Optional[List[Tuple[Container, SlotCoord]]] = None
 
     @property
-    def is_fully_expanded(self):
+    def is_fully_expanded(self) -> bool:
         return self.untried_moves is not None and len(self.untried_moves) == 0
 
-    def get_legal_moves(self) -> List[Tuple[Container, Slot]]:
-        """Identify the next container and top valid slots."""
-        if not self.cargo:
-            return []
 
-        # Strategy: Strict Ordering. We only try to place the NEXT container.
-        next_c = self.cargo[0]
-
-        candidates: List[Tuple[Slot, float]] = []
-        for s in self.vessel.slots.values():
-            if self.vessel.check_hard_constraints(next_c, s):
-                candidates.append((s, score_move(self.vessel, next_c, s)))
-
-        # Heuristic Pruning: Only consider top 5 slots to keep tree manageable
-        # This is critical for performance in Python
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        top_k = candidates[:5]
-
-        return [(next_c, x[0]) for x in top_k]
+def _place(
+    vessel: Vessel,
+    container: Container,
+    coord: SlotCoord,
+    free_tops: FreeTopsIndex,
+    crane_cache: Dict[int, int],
+) -> None:
+    """Place a container and update both indexes atomically."""
+    slot = vessel.get_slot_at(coord)
+    vessel.place(container, slot)
+    free_tops.place(coord.bay, coord.row)
+    crane_cache[coord.bay] = crane_cache.get(coord.bay, 0) + 1
 
 
-def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations: int = 1000):
-    # Sort cargo once (Global Ordering Strategy) [cite: 151]
-    sorted_cargo = sorted(initial_cargo, key=lambda c: (c.dischargePort, c.weight), reverse=True)
+def _undo(
+    vessel: Vessel,
+    coord: SlotCoord,
+    free_tops: FreeTopsIndex,
+    crane_cache: Dict[int, int],
+) -> None:
+    """Remove a container and roll back both indexes atomically."""
+    slot = vessel.get_slot_at(coord)
+    slot.container = None
+    free_tops.undo(coord.bay, coord.row)
+    crane_cache[coord.bay] = max(0, crane_cache.get(coord.bay, 0) - 1)
 
-    root = MCTSNode(copy.deepcopy(root_vessel), sorted_cargo)
 
-    best_global_plan = None
-    min_global_cost = float('inf')
+def local_search_polish(vessel: Vessel, max_steps: int = 500) -> Tuple[Vessel, float]:
+    """Post-processing Hill Climbing: swap pairs to squeeze extra efficiency."""
+    current_vessel = copy.deepcopy(vessel)
+    filled_slots = [s for s in current_vessel.slots.values() if not s.is_free]
 
-    # print(f"--- MCTS Start: {iterations} Iterations ---")
+    if len(filled_slots) < 2:
+        return current_vessel, calculate_cost(current_vessel, [])
 
-    for i in range(iterations):
+    current_cost = calculate_cost(current_vessel, [])
+    steps_without_improv = 0
+
+    for _ in range(max_steps):
+        if steps_without_improv > 50:
+            break
+
+        s1 = random.choice(filled_slots)
+        s2 = random.choice(filled_slots)
+        if s1 == s2:
+            continue
+
+        c1, c2 = s1.container, s2.container
+        s1.container = None
+        s2.container = None
+
+        if current_vessel.check_hard_constraints(
+            c1, s2
+        ) and current_vessel.check_hard_constraints(c2, s1):
+            s1.container = c2
+            s2.container = c1
+            new_cost = calculate_cost(current_vessel, [])
+            if new_cost < current_cost:
+                current_cost = new_cost
+                steps_without_improv = 0
+            else:
+                s1.container = c1
+                s2.container = c2
+                steps_without_improv += 1
+        else:
+            s1.container = c1
+            s2.container = c2
+
+    return current_vessel, current_cost
+
+
+def mcts_search(
+    root_vessel: Vessel,
+    initial_cargo: List[Container],
+    iterations: int = 1000,
+    exploration_constant: float = 0.5,
+) -> Tuple[Optional[Vessel], float]:
+
+    sorted_cargo = sorted(
+        initial_cargo, key=lambda c: (c.dischargePort, c.weight), reverse=True
+    )
+
+    root = MCTSNode(parent=None, move=None, cargo_index=0)
+    best_global_plan: Optional[Vessel] = None
+    min_global_cost = float("inf")
+
+    # OPT-1 & OPT-2: Build shared indexes once; update incrementally.
+    free_tops = FreeTopsIndex(root_vessel)
+    crane_cache = build_crane_cache(root_vessel)
+
+    for _ in range(iterations):
         node = root
+        tree_coords: List[SlotCoord] = []
 
-        # 1. SELECTION (Traverse down to a leaf)
-        # Use UCB1: node_val/visits + C * sqrt(ln(parent_visits)/visits)
-        while not node.is_terminal and node.is_fully_expanded:
-            def keyFunc(c: MCTSNode) -> float:
-                if not node:
-                    raise ValueError("node is None!")
-                if c.visits == 0:
-                    return float('inf')
+        # -------------------------------------------------------------- #
+        # 1. SELECTION                                                     #
+        # -------------------------------------------------------------- #
+        while not node.is_fully_expanded and node.children:
+            def ucb1(child: MCTSNode) -> float:
+                if child.visits == 0:
+                    return float("inf")
+                return (child.value / child.visits) + exploration_constant * math.sqrt(
+                    math.log(node.visits) / child.visits
+                )
 
-                return (c.value / c.visits) + 1.41 * math.sqrt(math.log(node.visits) / c.visits)
-            node = max(node.children, key=keyFunc)
+            node = max(node.children, key=ucb1)
+            if node.move:
+                container, coord = node.move
+                _place(root_vessel, container, coord, free_tops, crane_cache)
+                tree_coords.append(coord)
 
-        # 2. EXPANSION (Add a new child)
-        if not node.is_terminal and not node.is_fully_expanded:
+        # -------------------------------------------------------------- #
+        # 2. EXPANSION                                                     #
+        # -------------------------------------------------------------- #
+        if node.cargo_index < len(sorted_cargo):
             if node.untried_moves is None:
-                node.untried_moves = node.get_legal_moves()
+                next_c = sorted_cargo[node.cargo_index]
+
+                # OPT-4: Restrict to top-k preferred bays first
+                preferred_bays = assign_preferred_bays(
+                    next_c, root_vessel, free_tops, top_k=3
+                )
+
+                # OPT-1: Only visit one slot per column (the free top)
+                candidates: List[Tuple[SlotCoord, float]] = []
+                for bay, row, tier in free_tops.candidates():
+                    if bay not in preferred_bays:
+                        continue
+                    coord = SlotCoord(bay, row, tier)
+                    slot = root_vessel.get_slot_at(coord)
+                    if root_vessel.check_hard_constraints(next_c, slot):
+                        # OPT-2: Pass crane_cache — no full vessel scan
+                        sc = score_move_heavy(
+                            root_vessel, next_c, slot, crane_cache
+                        )
+                        candidates.append((coord, sc))
+
+                if candidates:
+                    tau = 1000.0
+                    scores = [x[1] for x in candidates]
+                    max_score = max(scores)
+                    weights = [math.exp((s - max_score) / tau) for s in scores]
+                    k = min(5, len(candidates))
+                    selected = random.choices(
+                        candidates, weights=weights, k=k * 2)
+
+                    seen: set = set()
+                    node.untried_moves = []
+                    for coord, _ in selected:
+                        if coord not in seen:
+                            seen.add(coord)
+                            node.untried_moves.append((next_c, coord))
+                            if len(node.untried_moves) >= k:
+                                break
+                else:
+                    node.untried_moves = []
 
             if node.untried_moves:
-                container, slot = node.untried_moves.pop()
+                container, coord = node.untried_moves.pop()
+                _place(root_vessel, container, coord, free_tops, crane_cache)
+                tree_coords.append(coord)
 
-                # Clone state for new node
-                new_vessel = copy.deepcopy(node.vessel)
-                s = new_vessel.get_slot_at(
-                    SlotCoord(slot.bay, slot.row, slot.tier))
-                if s:
-                    new_vessel.place(container, s)
-                    new_cargo = node.cargo[1:]
+                child_node = MCTSNode(
+                    parent=node,
+                    move=(container, coord),
+                    cargo_index=node.cargo_index + 1,
+                )
+                node.children.append(child_node)
+                node = child_node
 
-                    child_node = MCTSNode(new_vessel, new_cargo, parent=node)
-                    node.children.append(child_node)
-                    node = child_node
-
-        # 3. SIMULATION (Rollout)
-        # Use Randomized Greedy logic to finish the plan from this node
-        sim_vessel = copy.deepcopy(node.vessel)
-        sim_cargo = list(node.cargo)
+        # -------------------------------------------------------------- #
+        # 3. SIMULATION — OPT-1/3: O(B×R) scan, no scoring loop needed   #
+        # -------------------------------------------------------------- #
+        sim_coords: List[SlotCoord] = []
         sim_leftovers: List[Container] = []
 
-        # Fast Greedy Rollout
-        for c in sim_cargo:
-            candidates: List[Tuple[Slot, float]] = []
-            for s in sim_vessel.slots.values():
-                if sim_vessel.check_hard_constraints(c, s):
-                    candidates.append((s, score_move(sim_vessel, c, s)))
+        for i in range(node.cargo_index, len(sorted_cargo)):
+            c = sorted_cargo[i]
 
-            if candidates:
-                # Greedy choice (Top 1) for speed in rollout
-                candidates.sort(key=lambda x: x[1], reverse=True)
-                target = candidates[0][0]
-                sim_vessel.place(c, target)
+            # OPT-3: score_move_light == -tier, so the best slot is simply
+            # the free-top column with the minimum tier value. No scoring
+            # loop required — one pass to find the min-tier free column.
+            best_coord: Optional[SlotCoord] = None
+            best_tier = float("inf")
+
+            for bay, row, tier in free_tops.candidates():
+                if tier < best_tier:
+                    coord = SlotCoord(bay, row, tier)
+                    slot = root_vessel.get_slot_at(coord)
+                    if root_vessel.check_hard_constraints(c, slot):
+                        best_tier = tier
+                        best_coord = coord
+
+            if best_coord:
+                _place(root_vessel, c, best_coord, free_tops, crane_cache)
+                sim_coords.append(best_coord)
             else:
                 sim_leftovers.append(c)
 
-        # 4. BACKPROPAGATION
-        # Convert Cost to Reward (Lower cost = Higher Reward)
-        # Using simple normalization 100000 / cost
-        cost = calculate_cost(sim_vessel, sim_leftovers)
-        reward = 1.0 / (1.0 + cost)
+        # -------------------------------------------------------------- #
+        # 4. EVALUATE & RECORD BEST                                        #
+        # -------------------------------------------------------------- #
+        cost = calculate_cost(root_vessel, sim_leftovers)
 
-        # Update Best Found
-        if cost < min_global_cost:
+        total_items = len(sorted_cargo)
+        stowed_items = node.cargo_index + len(sim_coords)
+        is_feasible = (len(sim_leftovers) == 0) and (
+            stowed_items == total_items)
+
+        if is_feasible and cost < min_global_cost:
             min_global_cost = cost
-            best_global_plan = sim_vessel
-            #print( f"  > Iter {i}: New Best Cost {cost:.0f} (Left: {len(sim_leftovers)})")
+            best_global_plan = copy.deepcopy(root_vessel)
 
-        while node is not None:
-            node.visits += 1
-            node.value += reward
-            node = node.parent
+        # -------------------------------------------------------------- #
+        # 5. BACKPROPAGATION                                               #
+        # -------------------------------------------------------------- #
+        if is_feasible:
+            reward = 1.0 + 1.0 / (1.0 + cost)
+        else:
+            ratio = stowed_items / total_items
+            reward = ratio ** 2
+
+        backprop_node = node
+        while backprop_node is not None:
+            backprop_node.visits += 1
+            backprop_node.value += reward
+            backprop_node = backprop_node.parent
+
+        # -------------------------------------------------------------- #
+        # 6. UNDO ALL MOVES                                                #
+        # -------------------------------------------------------------- #
+        for coord in reversed(sim_coords):
+            _undo(root_vessel, coord, free_tops, crane_cache)
+
+        for coord in reversed(tree_coords):
+            _undo(root_vessel, coord, free_tops, crane_cache)
 
     return best_global_plan, min_global_cost
 
+
 # ==========================================
-# 4. CLI RUNNER
+# 5. CLI RUNNER
 # ==========================================
 
 
@@ -180,39 +434,45 @@ def main():
                         default=[1000.0, 30000.0])
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--exploration",
+        type=float,
+        default=0.5,
+        help="UCB1 exploration constant (lower = more exploitation)",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
 
-    def ri(vals: List[int], f: bool = False):
-        if len(vals) == 1:
-            return Range(vals[0], vals[0] if f else vals[0]+1)
-        return Range(vals[0], vals[1])
+    def ri(vals: List[int]) -> Range:
+        return Range(vals[0], vals[0] + 1) if len(vals) == 1 else Range(vals[0], vals[1])
 
-    def rf(vals: List[float], f: bool = False):
-        if len(vals) == 1:
-            return Range(vals[0], vals[0] if f else vals[0]+1)
-        return Range(vals[0], vals[1])
+    def rf(vals: List[float]) -> Range:
+        return Range(vals[0], vals[0]) if len(vals) == 1 else Range(vals[0], vals[1])
 
-    vessel = Vessel(ri(args.bays)(), ri(args.rows)(),
-                    ri(args.tiers)())
-    cargo = [Container.gen_random(rf(args.weight, True), ri(
-        [1, 5])) for _ in range(ri(args.containers)())]
+    vessel = Vessel(ri(args.bays)(), ri(args.rows)(), ri(args.tiers)())
+    cargo = [
+        Container.gen_random(rf(args.weight), ri([1, 5]))
+        for _ in range(ri(args.containers)())
+    ]
 
     print(
         f"Initialized MCTS. Ship: {vessel.capacity} slots. Cargo: {len(cargo)} items.")
-    best_ves, cost = mcts_search(vessel, cargo, args.iterations)
+
+    best_ves, cost = mcts_search(
+        vessel, cargo, args.iterations, args.exploration)
 
     print("\n--- MCTS RESULT ---")
     print(f"Final Cost: {cost:.0f}")
 
-    # Display simple plan
     count = 0
     if best_ves:
         for s in best_ves.slots.values():
             if s.container:
                 count += 1
         print(f"Stowed: {count}/{len(cargo)}")
+    else:
+        print("No feasible plan found.")
 
 
 if __name__ == "__main__":

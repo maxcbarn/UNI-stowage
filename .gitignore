@@ -3,3 +3,6 @@ __pycache__
 *.log
 *.csv
 *.bat
+*.zip
+temp.py
+.vscode

@@ -1,0 +1,3 @@
+[submodule "Stowage-Planning-Benckmark"]
+	path = Stowage-Planning-Benckmark
+	url = https://github.com/maritimelab/Stowage-Planning-Benckmark.git

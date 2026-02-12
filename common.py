@@ -100,6 +100,49 @@ class Vessel:
         for b, r, t in product(range(bays), range(rows), range(tiers)):
             self.slots[SlotCoord(b, r, t)] = Slot(b, r, t)
 
+    @property
+    def containerAmount(self):
+        i = 0
+        for s in self.slots.values():
+            if s.container:
+                i += 1
+
+        return i
+
+    def __str__(self):
+        """
+        Visualizes the vessel layout.
+        Format: [ID|Dest] where ID=Container ID, Dest=Discharge Port.
+        """
+        lines = []
+        for b in range(self.bays):
+            lines.append(f"\n=== BAY {b} ===")
+
+            # Print Tiers from Top (highest index) to Bottom (0)
+            for t in range(self.tiers - 1, -1, -1):
+                row_cells = []
+                tier_label = f"T{t}"
+
+                for r in range(self.rows):
+                    slot = self.get_slot_at(SlotCoord(b, r, t))
+                    if slot and slot.container:
+                        c = slot.container
+                        # Format: [ID|Dest], e.g., [99|D2]
+                        # Uses :02d for 2-digit padding on ID
+                        cell = f"[{c.id:02d}|D{c.dischargePort}]"
+                    else:
+                        cell = "[ ..... ]"
+                    row_cells.append(cell)
+
+                # Join row cells with space
+                lines.append(f"{tier_label}: {' '.join(row_cells)}")
+
+            # Add Row numbers at the bottom of the bay
+            row_indices = [f"    R{r}   " for r in range(self.rows)]
+            lines.append("    " + " ".join(row_indices))
+
+        return "\n".join(lines)
+
     @classmethod
     def from_ship(cls, ship: Ship):
         vessel = cls()
@@ -263,12 +306,60 @@ def calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
     """ tier_moment = sum(
         s.tier * s.container.weight for s in vessel.slots.values() if s.container) """
 
-    ship = vessel_to_ship( vessel )
+    ship = vessel_to_ship(vessel)
 
     # Cost Function
-    cost = RehandlesNumber( ship ) + abs(BayMoment( ship )) + abs(RowMoment( ship )) + abs(TierMoment( ship ))
+    cost = RehandlesNumber(ship) + abs(BayMoment(ship)) + \
+        abs(RowMoment(ship)) + abs(TierMoment(ship))
 
     return cost
+
+
+def __calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
+    """
+    Calculates a cost score based on the hierarchy found in:
+    - Sciomachen & Tanfani (2003): Maximize loaded cargo first.
+    - Ding & Chou (2015): Minimize shifts/rehandles second.
+    - Ambrosino et al. (2004): Stability as a constraint/secondary objective.
+    """
+
+    # --- WEIGHTS (Order of Magnitude Strategy) ---
+
+    # Priority 1: Cargo Maximization
+    # Must be > (Max_Rehandles * W_REHANDLE)
+    # Max rehandles approx = 60 slots * 1000 = 60,000. So 100,000 is safe.
+    W_LEFTOVER = 100_000.0
+
+    # Priority 2: Operational Efficiency (Rehandles)
+    # Must be > (Max_Stability_Deviation * W_STABILITY)
+    W_REHANDLE = 1_000.0
+
+    # Priority 3: Stability Optimization (Tie-Breakers)
+    # Penalties for deviating from perfect trim/list.
+    W_MOMENT = 10.0
+
+    ship = vessel_to_ship(vessel)
+
+    # 1. Critical Penalty: Containers left on the dock
+    # - Primary objective is "load max containers"
+    cost_leftovers = len(leftovers) * W_LEFTOVER
+
+    # 2. Operational Penalty: Rehandles (Overstows)
+    # - Objective is "reduce number of shifts"
+    cost_rehandles = RehandlesNumber(ship) * W_REHANDLE
+
+    # 3. Stability Penalty: Moments (Center of Gravity deviations)
+    # - Secondary optimization for fuel/ballast
+    # We sum absolute deviations for Bay (Longitudinal), Row (Transversal), Tier (Vertical)
+    # Note: Tier moment (Vertical) is usually just minimized, not zeroed,
+    # but for simplicity we treat higher CG as 'costly' here.
+    cost_stability = (abs(BayMoment(ship)) +
+                      abs(RowMoment(ship)) +
+                      abs(TierMoment(ship))) * W_MOMENT
+
+    total_cost = cost_leftovers + cost_rehandles + cost_stability
+
+    return total_cost
 
 
 def container_to_cont(c: Container | None) -> Optional[Cont]:
@@ -297,5 +388,69 @@ def vessel_to_ship(vessel: Vessel) -> Ship:
 def ship_to_vessel(ship: Ship) -> Tuple[Vessel, List[Container]]:
     return Vessel.from_ship(ship), []
 
+
 def cont_to_containter(conts: List[Cont]) -> List[Container]:
     return [Container(c['weight'], c['dest']) for c in conts]
+
+
+def parse_benchmark_containers(filepath: str) -> List[Cont]:
+    containers = []
+    transport_types = {}
+
+    with open(filepath, 'r') as f:
+        lines = f.readlines()
+
+    mode = None
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+
+        if line.startswith("# Transport type"):
+            mode = "TYPES"
+            continue
+        elif line.startswith("# Containers"):
+            mode = "CONTAINERS"
+            continue
+
+        parts = line.split()
+        if mode == "TYPES":
+            # format: id length weight type
+            type_id = int(parts[0])
+            weight = float(parts[2])
+            transport_types[type_id] = weight
+        elif mode == "CONTAINERS":
+            # format: id port type
+            c_id = int(parts[0])
+            port = int(parts[1])
+            t_type = int(parts[2])
+
+            containers.append({
+                "id": c_id,
+                "weight": transport_types[t_type],
+                "dest": port
+            })
+    return containers
+
+
+def parse_benchmark_vessel(filepath: str) -> Tuple[int, int, int]:
+    """
+    Extracts dimensions from the benchmark vessel file.
+    Note: Benchmark vessels are often non-rectangular; 
+    we extract max dimensions for your current Ship/Vessel classes.
+    """
+    max_bays = 0
+    max_stacks = 0
+    max_tiers = 0
+
+    with open(filepath, 'r') as f:
+        for line in f:
+            if line.startswith("# Ship:"):
+                parts = next(f).split()
+                # The file defines total bays, stacks, tiers
+                return int(parts[0]), int(parts[1]), int(parts[2])
+    return 0, 0, 0
+
+
+def count_cont_ship(ship: Ship):
+    return sum(1 for bay in ship for row in bay for slot in row if slot)

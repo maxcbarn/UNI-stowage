@@ -1,1 +1,1 @@
-[{'id': 1, 'weight': 51.4, 'dest': 1}, {'id': 2, 'weight': 98.9, 'dest': 1}, {'id': 3, 'weight': 8.2, 'dest': 5}, {'id': 4, 'weight': 91.1, 'dest': 4}, {'id': 5, 'weight': 62.3, 'dest': 5}]
+[{'id': 1, 'weight': 89.5, 'dest': 4}, {'id': 2, 'weight': 59.8, 'dest': 4}, {'id': 3, 'weight': 32.0, 'dest': 5}, {'id': 4, 'weight': 95.0, 'dest': 1}, {'id': 5, 'weight': 74.2, 'dest': 2}]
