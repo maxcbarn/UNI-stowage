@@ -1,5 +1,6 @@
+from collections import defaultdict
 import multiprocessing
-from typing import Callable, Dict, List, Tuple, TypedDict
+from typing import Callable, Dict, List, Set, Tuple, TypedDict
 from common import CostReport, Vessel, Container, conts_to_containers, parse_benchmark_containers, parse_benchmark_vessel
 from probabilistic import mcts_search
 from genetic import solve_stowage_genetic
@@ -10,6 +11,7 @@ import os
 import re
 import sys
 import time
+import pandas as pd
 
 from pathlib import Path
 
@@ -23,7 +25,7 @@ def Genetic(containers: List[Container], vessel: Vessel):
         vessel = solve_stowage_genetic(containers, vessel)
     timeSeconds = timeit.timeit(run, number=1)
 
-    cost = log("probabilistic", vessel, [], containers, timeSeconds)
+    cost = log("genetic", vessel, [], containers, timeSeconds)
     print(
         f"Finished Genetic for {vessel.containerAmount}/{len(containers)} containers in {timeSeconds:.2f}s")
 
@@ -107,15 +109,17 @@ def main():
     }
 
     sols = sys.argv[1:]
-    if sols[0].lower() != 'all':
+    if sols[0].lower() == 'all':
+        sols = solutions.keys()
+    elif sols[0].lower().startswith('others'):
+        sols = solutions.keys() - ['Exact']
+    else:
         for i in range(len(sols)):
             sols[i] = sols[i].capitalize()
             for key in solutions.keys():
                 if key.startswith(sols[i]):
                     sols[i] = key
                     break
-    else:
-        sols = solutions.keys()
 
     executions = 0
     bays = 0
@@ -123,18 +127,35 @@ def main():
     tier = 0
     os.makedirs("logs", exist_ok=True)
 
+    skip: Dict[str, Dict[Tuple[int, int, int, int], int]
+               ] = defaultdict(lambda: defaultdict(lambda: 0))
     for sol in sols:
-        with open(f"logs/{sol.lower()}.csv", "w") as log:
-            log.write(
-                f"executeTime(s),containersQuantity,{CostReport.header()}\n")
+        log_path = Path(f"logs/{sol.lower()}.csv")
 
-        with open(f"logs/{sol.lower()}.json", "w") as log:
-            log.write("[{}\n")
+        if (log_path.exists()):
+            def getTuple(x):
+                return x.containersQuantity, x.bays, x.rows, x.tiers
+
+            for entry in map(lambda x: getTuple(
+                    x), pd.read_csv(log_path).itertuples(index=True, name='Pandas')):
+                skip[sol][entry] += 1
+            print(skip)
+
+        else:
+            with open(f"logs/{sol.lower()}.csv", "w") as log:
+                log.write(
+                    f"executeTime(s),containersQuantity,{CostReport.header()}\n")
+
+        json_path = Path(f"logs/{sol.lower()}.json")
+        init = "[{}\n"
+        if not json_path.exists():
+            with open(json_path, 'w') as json:
+                json.write(init)
 
     containerToTest = list(map(lambda x: os.path.join(
         "containers", x), os.listdir("containers")))
     containers = []
-    for container in containerToTest[:2]:
+    for container in containerToTest:
         matchRegex = re.match(r"^.*containers-(\d+)\.txt", container)
         containerAmount = int(matchRegex.group(1)) if matchRegex else 0
         if containerAmount <= 30:
@@ -153,15 +174,19 @@ def main():
             rows = 10
             tier = 10
 
+        executions = 1
+
         vessel = Vessel(bays=bays, rows=rows, tiers=tier)
 
         with open(container, "r") as file:
             containers = conts_to_containers(eval(file.read()))
 
-        for _ in range(0, 1):
-            for arg in sols:
-                if arg == "Exact" and len(containers) > 15:
-                    continue
+        for arg in sols:
+            if arg == "Exact" and len(containers) > 15:
+                sols.remove(arg)
+            executions -= skip[arg][(len(containers),
+                                     vessel.bays, vessel.rows, vessel.tiers)]
+            for _ in range(executions):
                 solutions[arg](containers, vessel)
 
     # Paths to your benchmark folders
@@ -189,7 +214,8 @@ def main():
     sorted_inputs = sorted(
         inputs, key=lambda inp: len(inp[0]) * inp[1].capacity)
 
-    for inp in sorted_inputs[23:]:
+    for inp in sorted_inputs:
+        executions = 1
         conts, vessel, v, i = inp
         if vessel.capacity < len(conts):
             print(
@@ -199,9 +225,18 @@ def main():
             print(
                 f"Running {sol}: {v} + {i} -> ({len(conts)}, {vessel.bays} * {vessel.rows} * {vessel.tiers})")
 
-            start = time.perf_counter()
-            cost = solutions[sol](conts, vessel)
-            elapsed = time.perf_counter() - start
+            elapsed = 0
+            cost = 0
+            executions -= skip[sol][(len(conts),
+                                     vessel.bays, vessel.rows, vessel.tiers)]
+
+            for _ in range(executions):
+                start = time.perf_counter()
+                cost += solutions[sol](conts, vessel)
+                elapsed += time.perf_counter() - start
+
+            elapsed /= executions
+            cost /= executions
 
             results.append({
                 "algo": sol,
@@ -227,4 +262,5 @@ def main():
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+
     main()

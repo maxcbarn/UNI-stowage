@@ -118,6 +118,7 @@ class Vessel:
 
     def JSON_str(self) -> str:
         return json.dumps({
+            "contCount": self.containerAmount,
             "bays": self.bays,
             "rows": self.rows,
             "tiers": self.tiers,
@@ -295,10 +296,10 @@ class CostReport:
 
     @classmethod
     def header(cls):
-        return "bays, rows, tiers, lightVCG, lightWeight, hydroDisp(x), hydroKM(y),cost, rehandles, bayMoment, rowMoment, tierMoment, gm".strip()
+        return "bays, rows, tiers, lightVCG, lightWeight, hydroDisp(x), hydroKM(y),cost, rehandles, bayMoment, rowMoment, tierMoment, gm".replace(' ', '')
 
     def log(self):
-        return f"{self.vessel.bays}, {self.vessel.rows}, {self.vessel.tiers}, {self.vessel.lightship_vcg}, {self.vessel.lightship_weight}, {self.vessel.hydro_km}, {self.vessel.hydro_disp}, {self.total_cost}, {self.rehandles}, {self.bay_moment}, {self.row_moment}, {self.tier_moment}, {self.gm}".strip()
+        return f'{self.vessel.bays}, {self.vessel.rows}, {self.vessel.tiers}, {self.vessel.lightship_vcg}, {self.vessel.lightship_weight}, "{self.vessel.hydro_km}", "{self.vessel.hydro_disp}", {self.total_cost}, {self.rehandles}, {self.bay_moment}, {self.row_moment}, {self.tier_moment}, {self.gm}'.replace(" ", '')
 
     @property
     def bay_moment(self) -> float: return self.moments[0]

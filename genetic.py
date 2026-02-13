@@ -1,4 +1,4 @@
-from common import Cont, Container, Vessel, SlotCoord, CostReport, calculate_cost, W_GM_FAIL, W_REHANDLE
+from common import Container, CostReport, Vessel, SlotCoord, calculate_gm,  MIN_GM
 from deap import base, creator, tools  # type: ignore
 from typing import List, Tuple, Any, Optional, cast, Dict
 import random
@@ -89,25 +89,17 @@ def evaluate_stowage_worker(individual: Any) -> Tuple[float, float, float]:
     # Objective 2: Safety (GM Penalty) - Must be minimized!
     # Objective 3: Balance (Bay/Row Moments)
 
-    # Calculate costs using common.py logic
-    # Note: We need to adapt calculate_master_cost to return components if we want MOO,
-    # or just sum them up. For NSGA-II, separate objectives are better.
-
     # 1. Safety (GM)
-    from common import calculate_gm, MIN_GM
     gm = calculate_gm(vessel)
     safety_cost = (MIN_GM - gm) * 100.0 if gm < MIN_GM else 0.0  # Scale for GA
 
     # 2. Efficiency
-    from common import RehandlesNumber, vessel_to_ship
-    # We still convert to ship list for the fast RehandlesNumber function in common
-    # (unless you rewrite RehandlesNumber to use Vessel directly, which is recommended later)
-    ship_list = vessel_to_ship(vessel)
-    rehandles = RehandlesNumber(ship_list)
+    # Convert to ship list for the fast RehandlesNumber function in common
+    rehandles = vessel.calculate_rehandles()
 
     # 3. Balance
-    from common import BayMoment, RowMoment
-    balance_cost = abs(BayMoment(ship_list)) + abs(RowMoment(ship_list))
+    balance_cost = abs(vessel.calculate_bay_moment()) + \
+        abs(vessel.calculate_row_moment())
 
     return float(rehandles), float(safety_cost), float(balance_cost)
 
@@ -118,14 +110,12 @@ def evaluate_local(individual: Any, containers: List[Container], num_bays: int, 
     vessel = build_vessel_from_individual(
         ind_as_list, containers, num_bays, num_rows, max_tiers)
 
-    from common import calculate_gm, MIN_GM, RehandlesNumber, vessel_to_ship, BayMoment, RowMoment
-
     gm = calculate_gm(vessel)
     safety_cost = (MIN_GM - gm) * 100.0 if gm < MIN_GM else 0.0
 
-    ship_list = vessel_to_ship(vessel)
-    rehandles = RehandlesNumber(ship_list)
-    balance_cost = abs(BayMoment(ship_list)) + abs(RowMoment(ship_list))
+    rehandles = vessel.calculate_rehandles()
+    balance_cost = abs(vessel.calculate_bay_moment()) + \
+        abs(vessel.calculate_row_moment())
 
     return float(rehandles), float(safety_cost), float(balance_cost)
 
