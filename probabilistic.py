@@ -7,7 +7,12 @@ import random
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
-from common import Vessel, Container, Slot, SlotCoord, calculate_cost, Range
+from common import (
+    Vessel, Container, Slot, SlotCoord, Range,
+    calculate_cost, calculate_gm,
+    CONTAINER_HEIGHT, MIN_GM,
+    W_REHANDLE, W_GM_FAIL, W_BALANCE,
+)
 
 # ==========================================
 # 1. SPATIAL INDEX
@@ -78,28 +83,61 @@ def score_move_heavy(
 ) -> float:
     """
     HEAVY Heuristic: Used for Tree Expansion.
-    Includes: Stability, Crane Intensity (cached), Hatch Overstow.
+
+    Scores a candidate placement using the same cost components as
+    calculate_cost() from common.py, scaled by the same unified weights:
+
+      - GM / Stability (W_GM_FAIL):  penalises placing heavy containers high,
+        which raises VCG and reduces GM.
+      - Rehandles (W_REHANDLE):      penalises discharge-port inversions and
+        weight inversions directly below the new slot.
+      - Balance (W_BALANCE):         penalises deviation from the lateral
+        centre (row moment contribution of this container).
+      - Crane Intensity (OPT-2):     penalises already-busy bays to spread
+        load, scaled proportionally to W_REHANDLE.
     """
     score = 0.0
 
-    # 1. Stability
-    score -= (slot.tier * container.weight) / 1000.0
-    dist_row = abs(slot.row - (vessel.rows - 1) / 2.0)
-    score -= dist_row * (container.weight / 1000.0)
+    # ------------------------------------------------------------------
+    # 1. Stability — GM contribution (W_GM_FAIL)
+    #    Placing a container at tier t raises VCG by approximately:
+    #      ΔVCG ≈ weight * (lightship_vcg + tier * CONTAINER_HEIGHT) / disp
+    #    We approximate the marginal cost as proportional to tier * weight.
+    #    Higher tiers → higher VCG → lower GM → higher penalty.
+    # ------------------------------------------------------------------
+    vcg_proxy = slot.tier * CONTAINER_HEIGHT  # metres above baseline
+    score -= (container.weight * vcg_proxy / 1000.0) * (W_GM_FAIL / 1000.0)
 
-    # 2. Crane Intensity — OPT-2: O(1) lookup instead of O(B×R×T) scan
-    score -= crane_cache.get(slot.bay, 0) * 5.0
-
-    # 3. Blocking & Overstowage
+    # ------------------------------------------------------------------
+    # 2. Rehandle penalty — discharge-port and weight inversions (W_REHANDLE)
+    #    Mirrors vessel.calculate_rehandles() for the single slot below.
+    # ------------------------------------------------------------------
     if slot.tier > 0:
         under = vessel.get_slot_at(
             SlotCoord(slot.bay, slot.row, slot.tier - 1))
         if under and under.container:
             below = under.container
+            # Discharge-port inversion: this container discharges later → overstow
             if container.dischargePort > below.dischargePort:
-                score -= 10000.0
+                score -= W_REHANDLE
+            # Weight inversion: heavier on top of lighter → unsafe / costly
             if container.weight > below.weight:
-                score -= 5000.0
+                score -= W_REHANDLE * 0.5
+
+    # ------------------------------------------------------------------
+    # 3. Balance — lateral (row) moment contribution (W_BALANCE)
+    #    Penalises placing weight far from the transverse centre.
+    # ------------------------------------------------------------------
+    center_row = (vessel.rows - 1) / 2.0
+    lateral_deviation = abs(slot.row - center_row)
+    score -= lateral_deviation * (container.weight / 1000.0) * W_BALANCE
+
+    # ------------------------------------------------------------------
+    # 4. Crane Intensity — OPT-2: O(1) lookup (proportional to W_REHANDLE)
+    #    Spreading containers across bays reduces crane congestion.
+    # ------------------------------------------------------------------
+    score -= crane_cache.get(slot.bay, 0) * (W_REHANDLE / 200.0)
+
     return score
 
 
@@ -207,7 +245,12 @@ def _undo(
 
 
 def local_search_polish(vessel: Vessel, max_steps: int = 500) -> Tuple[Vessel, float]:
-    """Post-processing Hill Climbing: swap pairs to squeeze extra efficiency."""
+    """
+    Post-processing Hill Climbing: swap pairs to squeeze extra efficiency.
+
+    Uses calculate_cost() from common.py directly, which accounts for
+    GM safety, rehandles, and balance moments.
+    """
     current_vessel = copy.deepcopy(vessel)
     filled_slots = [s for s in current_vessel.slots.values() if not s.is_free]
 
@@ -256,7 +299,15 @@ def mcts_search(
     iterations: int = 1000,
     exploration_constant: float = 0.5,
 ) -> Tuple[Optional[Vessel], float]:
+    """
+    Monte Carlo Tree Search stowage solver.
 
+    Evaluation uses calculate_cost() from common.py, which combines:
+      - GM safety penalty     (W_GM_FAIL)
+      - Rehandle count        (W_REHANDLE)
+      - Bay/row balance       (W_BALANCE)
+      - Unloaded cargo        (W_LEFTOVER)
+    """
     sorted_cargo = sorted(
         initial_cargo, key=lambda c: (c.dischargePort, c.weight), reverse=True
     )
@@ -380,6 +431,9 @@ def mcts_search(
 
         # -------------------------------------------------------------- #
         # 4. EVALUATE & RECORD BEST                                        #
+        # Uses calculate_cost() from common.py (GM + rehandles + balance  #
+        # + leftovers), ensuring MCTS optimises the same objective as the  #
+        # final reported score.                                            #
         # -------------------------------------------------------------- #
         cost = calculate_cost(root_vessel, sim_leftovers)
 
@@ -424,6 +478,15 @@ def mcts_search(
 # ==========================================
 
 
+def _gen_random_container(cid: int, weight_range: Range, port_range: Range) -> Container:
+    """Generate a random Container compatible with common.py's Container dataclass."""
+    return Container(
+        id=cid,
+        weight=round(weight_range(), 1),
+        dischargePort=int(port_range()),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="MCTS Stowage Solver")
     parser.add_argument("--bays", nargs="+", type=int, default=[5])
@@ -451,9 +514,12 @@ def main():
         return Range(vals[0], vals[0]) if len(vals) == 1 else Range(vals[0], vals[1])
 
     vessel = Vessel(ri(args.bays)(), ri(args.rows)(), ri(args.tiers)())
+    weight_range = rf(args.weight)
+    port_range = ri([1, 5])
+    n_cargo = ri(args.containers)()
     cargo = [
-        Container.gen_random(rf(args.weight), ri([1, 5]))
-        for _ in range(ri(args.containers)())
+        _gen_random_container(i, weight_range, port_range)
+        for i in range(n_cargo)
     ]
 
     print(
@@ -462,8 +528,17 @@ def main():
     best_ves, cost = mcts_search(
         vessel, cargo, args.iterations, args.exploration)
 
+    if best_ves:
+        # Run local search polish pass to tighten the solution
+        best_ves, cost = local_search_polish(best_ves)
+
     print("\n--- MCTS RESULT ---")
     print(f"Final Cost: {cost:.0f}")
+
+    gm = calculate_gm(best_ves) if best_ves else float("nan")
+    rehandles = best_ves.calculate_rehandles() if best_ves else 0
+    print(f"GM: {gm:.2f} m  (min {MIN_GM} m)")
+    print(f"Rehandles: {rehandles}")
 
     count = 0
     if best_ves:

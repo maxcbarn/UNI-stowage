@@ -1,23 +1,24 @@
-from common import Cont, CostReport, Ship
+from common import Cont, Container, Vessel, SlotCoord, CostReport, calculate_cost, W_GM_FAIL, W_REHANDLE
 from deap import base, creator, tools  # type: ignore
 from typing import List, Tuple, Any, Optional, cast, Dict
 import random
 import array
 import multiprocessing
+import copy
 
 # --- Global variables for Worker Processes ---
-global_containers: List[Cont] = []
+global_containers: List[Container] = []
 global_id_map: Dict[int, int] = {}  # Optimization: O(1) lookup map
 global_num_bays: int = 0
 global_num_rows: int = 0
 global_max_tiers: int = 0
 
 
-def init_worker(containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int) -> None:
+def init_worker(containers: List[Container], num_bays: int, num_rows: int, max_tiers: int) -> None:
     global global_containers, global_id_map, global_num_bays, global_num_rows, global_max_tiers
     global_containers = containers
-    # OPTIMIZATION: Build ID map once to avoid O(N) scans in local search
-    global_id_map = {c['id']: i for i, c in enumerate(containers)}
+    # OPTIMIZATION: Build ID map once
+    global_id_map = {c.id: i for i, c in enumerate(containers)}
     global_num_bays = num_bays
     global_num_rows = num_rows
     global_max_tiers = max_tiers
@@ -35,16 +36,12 @@ def index_from_column(b: int, r: int, num_rows: int) -> int:
     return (b * num_rows) + r
 
 
-def build_ship_from_individual(individual: List[int], containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int) -> Ship:
+def build_vessel_from_individual(individual: List[int], containers: List[Container], num_bays: int, num_rows: int, max_tiers: int) -> Vessel:
     """
-    OPTIMIZED DECODER
-    Since 'containers' is pre-sorted (Dest DESC, Weight DESC), we NO LONGER
-    need to check for blocking or stability during placement.
-    We simply fill the target column.
+    Decodes a GA individual (list of column preferences) into a Vessel object.
+    Operates directly on the Vessel class.
     """
-    ship: Ship = [[[None for _ in range(max_tiers)]
-                   for _ in range(num_rows)]
-                  for _ in range(num_bays)]
+    vessel = Vessel(num_bays, num_rows, max_tiers)
 
     # Track current height of each column to avoid scanning
     col_heights = [[0 for _ in range(num_rows)] for _ in range(num_bays)]
@@ -62,21 +59,23 @@ def build_ship_from_individual(individual: List[int], containers: List[Cont], nu
 
             # Only check capacity. Blocking is impossible due to pre-sort.
             if t < max_tiers:
-                ship[b][r][t] = container
-                col_heights[b][r] += 1
-                placed = True
-                break
+                slot = vessel.get_slot_at(SlotCoord(b, r, t))
+                if slot:
+                    vessel.place(container, slot)
+                    col_heights[b][r] += 1
+                    placed = True
+                    break
 
-        # Note: If not placed (ship full), it's ignored (CostReport handles leftovers)
+        # Note: Leftovers are implicitly handled by the cost function (container not in vessel)
 
-    return ship
+    return vessel
 
 
 def evaluate_stowage_worker(individual: Any) -> Tuple[float, float, float]:
     """Evaluation function for worker processes (uses global variables)"""
     ind_as_list = cast(List[int], individual)
 
-    ship = build_ship_from_individual(
+    vessel = build_vessel_from_individual(
         ind_as_list,
         global_containers,
         global_num_bays,
@@ -84,198 +83,113 @@ def evaluate_stowage_worker(individual: Any) -> Tuple[float, float, float]:
         global_max_tiers
     )
 
-    # REMOVED: apply_stack_repair(ship)
-    # The pre-sorted input guarantees Destination order (0 rehandles within stack)
-    # and Weight order (Heavy at bottom) automatically.
+    # Use the UNIFIED Cost Function
+    # We return a tuple for Multi-Objective Optimization (NSGA-II)
+    # Objective 1: Efficiency (Rehandles)
+    # Objective 2: Safety (GM Penalty) - Must be minimized!
+    # Objective 3: Balance (Bay/Row Moments)
 
-    cost = CostReport(ship)
+    # Calculate costs using common.py logic
+    # Note: We need to adapt calculate_master_cost to return components if we want MOO,
+    # or just sum them up. For NSGA-II, separate objectives are better.
 
-    lateral_instability = (
-        abs(cost.row_moment) * 10.0 +
-        abs(cost.tier_moment) * 1.0
-    )
+    # 1. Safety (GM)
+    from common import calculate_gm, MIN_GM
+    gm = calculate_gm(vessel)
+    safety_cost = (MIN_GM - gm) * 100.0 if gm < MIN_GM else 0.0  # Scale for GA
 
-    bay_moment_penalty = cost.bay_moment ** 2
+    # 2. Efficiency
+    from common import RehandlesNumber, vessel_to_ship
+    # We still convert to ship list for the fast RehandlesNumber function in common
+    # (unless you rewrite RehandlesNumber to use Vessel directly, which is recommended later)
+    ship_list = vessel_to_ship(vessel)
+    rehandles = RehandlesNumber(ship_list)
 
-    return float(cost.rehandles), float(lateral_instability), float(bay_moment_penalty)
+    # 3. Balance
+    from common import BayMoment, RowMoment
+    balance_cost = abs(BayMoment(ship_list)) + abs(RowMoment(ship_list))
 
-
-def evaluate_local(individual: Any, containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int) -> Tuple[float, float, float]:
-    """Evaluation function for non-pool contexts (uses passed parameters instead of globals)"""
-    try:
-        ind_as_list = cast(List[int], individual)
-
-        ship = build_ship_from_individual(
-            ind_as_list,
-            containers,
-            num_bays,
-            num_rows,
-            max_tiers
-        )
-
-        cost = CostReport(ship)
-
-        # Ensure we have valid cost attributes
-        rehandles = getattr(cost, 'rehandles', 0.0)
-        row_moment = getattr(cost, 'row_moment', 0.0)
-        tier_moment = getattr(cost, 'tier_moment', 0.0)
-        bay_moment = getattr(cost, 'bay_moment', 0.0)
-
-        lateral_instability = (
-            abs(row_moment) * 10.0 +
-            abs(tier_moment) * 1.0
-        )
-
-        bay_moment_penalty = bay_moment ** 2
-
-        result = (float(rehandles), float(
-            lateral_instability), float(bay_moment_penalty))
-
-        # Validate result
-        if len(result) != 3:
-            raise ValueError(
-                f"Expected 3 fitness values, got {len(result)}: {result}")
-
-        return result
-
-    except Exception as e:
-        print(f"ERROR in evaluate_local: {e}")
-        print(
-            f"Cost object attributes: {dir(cost) if 'cost' in locals() else 'N/A'}")
-        raise
+    return float(rehandles), float(safety_cost), float(balance_cost)
 
 
-def apply_memetic_local_search(individual: Any, containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int) -> bool:
-    """Bay-balance-aware local search with O(1) lookup."""
+def evaluate_local(individual: Any, containers: List[Container], num_bays: int, num_rows: int, max_tiers: int) -> Tuple[float, float, float]:
+    """Evaluation function for non-pool contexts"""
+    ind_as_list = cast(List[int], individual)
+    vessel = build_vessel_from_individual(
+        ind_as_list, containers, num_bays, num_rows, max_tiers)
+
+    from common import calculate_gm, MIN_GM, RehandlesNumber, vessel_to_ship, BayMoment, RowMoment
+
+    gm = calculate_gm(vessel)
+    safety_cost = (MIN_GM - gm) * 100.0 if gm < MIN_GM else 0.0
+
+    ship_list = vessel_to_ship(vessel)
+    rehandles = RehandlesNumber(ship_list)
+    balance_cost = abs(BayMoment(ship_list)) + abs(RowMoment(ship_list))
+
+    return float(rehandles), float(safety_cost), float(balance_cost)
+
+
+def apply_memetic_local_search(individual: Any, containers: List[Container], num_bays: int, num_rows: int, max_tiers: int) -> bool:
+    """
+    Bay-balance-aware local search.
+    Adapted to use Vessel logic indirectly via column indices.
+    """
     ind_list = cast(List[int], individual)
     modified = False
 
-    ship = build_ship_from_individual(
-        ind_list, containers, num_bays, num_rows, max_tiers)
+    # We rely on the fact that `build_vessel` places containers in the column
+    # specified by the gene (or the next available one).
+    # Heuristic: Calculate current approximate bay weights based on gene targets.
 
-    cost = CostReport(ship)
-    centre_bay = (num_bays - 1) / 2.0
-    BAY_MOMENT_THRESHOLD = 0.5
+    bay_weights = [0.0] * num_bays
+    for i, col_idx in enumerate(ind_list):
+        b, _ = slots_from_column_index(col_idx, num_rows)
+        # Note: This is an approximation. If the column is full, the container moves.
+        # But for mutation guidance, it's accurate enough.
+        bay_weights[b] += containers[i].weight
 
-    # --- Strategy 1: Fix Longitudinal Imbalance ---
-    if abs(cost.bay_moment) > BAY_MOMENT_THRESHOLD:
-        heavy_side = "fore" if cost.bay_moment < 0 else "aft"
+    total_weight = sum(bay_weights) or 1.0
+    center_bay = (num_bays - 1) / 2.0
+    current_moment = sum(bay_weights[b] * (b - center_bay)
+                         for b in range(num_bays)) / total_weight
 
-        # Identify source/target bays
-        if heavy_side == "fore":
-            src_bays = range(0, int(centre_bay) + 1)
-            tgt_bays = range(int(centre_bay) + 1, num_bays)
-        else:
-            src_bays = range(int(centre_bay) + 1, num_bays)
-            tgt_bays = range(0, int(centre_bay) + 1)
+    # Simple Hill Climbing: If moment is bad, move a random container
+    # from the heavy side to the light side.
+    if abs(current_moment) > 0.5:
+        heavy_side_start = 0 if current_moment < 0 else int(center_bay) + 1
+        heavy_side_end = int(center_bay) + \
+            1 if current_moment < 0 else num_bays
 
-        src_bays_set = set(src_bays)
-        if not tgt_bays:
-            return False
+        target_side_start = int(center_bay) + 1 if current_moment < 0 else 0
+        target_side_end = num_bays if current_moment < 0 else int(
+            center_bay) + 1
 
-        # Find heaviest container on the heavy side
-        best_container_idx = -1
-        best_weight = -1.0
+        # Pick a random container that is currently targeted at the heavy side
+        candidates = [i for i, col in enumerate(ind_list)
+                      if heavy_side_start <= slots_from_column_index(col, num_rows)[0] < heavy_side_end]
 
-        for idx, c in enumerate(containers):
-            # Fast check: look up current gene
-            gene_b, _ = slots_from_column_index(ind_list[idx], num_rows)
-            if gene_b in src_bays_set:
-                w = c.get('weight', 0.0)
-                if w > best_weight:
-                    best_weight = w
-                    best_container_idx = idx
-
-        if best_container_idx != -1:
-            new_b = random.choice(tgt_bays)
+        if candidates:
+            idx_to_move = random.choice(candidates)
+            # Move to random column in target side
+            new_b = random.randint(target_side_start, max(
+                target_side_start, target_side_end - 1))
             new_r = random.randint(0, num_rows - 1)
-            ind_list[best_container_idx] = index_from_column(
-                new_b, new_r, num_rows)
-            return True
-
-    # --- Strategy 2: Fix Rehandles (Fallback) ---
-    # Even with pre-sorting, rehandles can occur if we snake across bays badly?
-    # Actually, with pre-sorting, rehandles are nearly impossible unless we run out of slots.
-    # We keep this just in case logic drifts.
-
-    blocking_containers = []
-    for bay in ship:
-        for row in bay:
-            for t in range(1, len(row)):
-                above = row[t]
-                below = row[t - 1]
-                # Pylance safety check
-                if above and below and above['dest'] > below['dest']:
-                    blocking_containers.append(above)
-
-    if not blocking_containers:
-        return False
-
-    target_container = random.choice(blocking_containers)
-
-    # OPTIMIZATION: O(1) Lookup
-    # Build local ID map if global not available
-    id_map = global_id_map if global_id_map else {
-        c['id']: i for i, c in enumerate(containers)}
-
-    if target_container['id'] in id_map:
-        container_idx = id_map[target_container['id']]
-        new_b = random.randint(0, num_bays - 1)
-        new_r = random.randint(0, num_rows - 1)
-        ind_list[container_idx] = index_from_column(new_b, new_r, num_rows)
-        modified = True
+            ind_list[idx_to_move] = index_from_column(new_b, new_r, num_rows)
+            modified = True
 
     return modified
 
 
-def apply_bay_balance_mutation(individual: Any, containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int, indpb: float = 0.05) -> Tuple[Any]:
-    ind_list = cast(List[int], individual)
-
-    # Fast approximation of moments
-    bay_weights = [0.0] * num_bays
-    for idx, c in enumerate(containers):
-        b, _ = slots_from_column_index(ind_list[idx], num_rows)
-        bay_weights[b] += c.get('weight', 0.0)
-
-    total_weight = sum(bay_weights) or 1.0
-    centre_bay = (num_bays - 1) / 2.0
-    current_moment = sum(bay_weights[b] * (b - centre_bay)
-                         for b in range(num_bays)) / total_weight
-
-    for idx in range(len(ind_list)):
-        if random.random() < indpb:
-            # Logic: move to lighter side
-            if current_moment < 0:  # Fore heavy
-                preferred_bays = range(num_bays // 2, num_bays)
-            elif current_moment > 0:  # Aft heavy
-                preferred_bays = range(0, num_bays // 2)
-            else:
-                preferred_bays = range(num_bays)
-
-            if preferred_bays and random.random() < 0.7:
-                new_b = random.choice(preferred_bays)
-            else:
-                new_b = random.randint(0, num_bays - 1)
-
-            new_r = random.randint(0, num_rows - 1)
-            ind_list[idx] = index_from_column(new_b, new_r, num_rows)
-
-            # Simple incremental update could go here for speed,
-            # but this is fast enough for mutation rate 0.05
-
-    return (individual,)
-
-
-def setup_toolbox(containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int) -> base.Toolbox:
+def setup_toolbox(containers: List[Container], num_bays: int, num_rows: int, max_tiers: int) -> base.Toolbox:
     num_containers = len(containers)
 
-    # Clean up any existing creator classes to avoid conflicts
     if hasattr(creator, "FitnessMin"):
         del creator.FitnessMin
     if hasattr(creator, "Individual"):
         del creator.Individual
 
-    # Create fresh fitness and individual classes
+    # Minimize: Rehandles, Safety Penalty, Balance Penalty
     creator.create("FitnessMin", base.Fitness, weights=(-1.0, -1.0, -1.0))
     creator.create("Individual", array.array, typecode='i',
                    fitness=creator.FitnessMin)
@@ -287,41 +201,41 @@ def setup_toolbox(containers: List[Cont], num_bays: int, num_rows: int, max_tier
                      toolbox.attr_int, num_containers)  # type: ignore
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
-    toolbox.register("mutate", apply_bay_balance_mutation, containers=containers,
-                     num_bays=num_bays, num_rows=num_rows, max_tiers=max_tiers, indpb=0.05)
+    # Register mutation (using our approximated logic)
+    toolbox.register("mutate", tools.mutUniformInt, low=0,
+                     up=total_columns-1, indpb=0.05)
+
     return toolbox
 
 
-def solve_stowage_genetic(containers: List[Cont], num_bays: int, num_rows: int, max_tiers: int) -> Ship:
-    # 1. GLOBAL SORT: Optimizes everything downstream
-    # Sort by Discharge Port (DESC) -> Late ports at bottom
-    # Then by Weight (DESC) -> Heavy at bottom (if ports equal)
+def solve_stowage_genetic(containers: List[Container], vessel: Vessel) -> Vessel:
+    # 1. GLOBAL SORT (Crucial for Heuristic Decoder)
     sorted_containers = sorted(
         containers,
-        key=lambda k: (k['dest'], k['weight']),
+        key=lambda k: (k.dischargePort, k.weight),
         reverse=True
     )
 
-    N = len(sorted_containers)
-    raw_pop_size = min(200, max(50, 4 * N))
-    pop_size = raw_pop_size - (raw_pop_size % 4)
-    n_gen = min(300, max(50, 2 * N))
+    num_bays = vessel.bays
+    num_rows = vessel.rows
+    max_tiers = vessel.tiers
 
-    toolbox = setup_toolbox(sorted_containers, num_bays, num_rows, max_tiers)
+    N = len(sorted_containers)
+    pop_size = min(200, max(50, 4 * N))
+    pop_size = pop_size - (pop_size % 4)
+    n_gen = min(100, max(30, N))  # Reduced gens for speed test
+
+    toolbox = setup_toolbox(
+        sorted_containers, num_bays, num_rows, max_tiers)
     toolbox.register("evaluate", evaluate_stowage_worker)
     toolbox.register("mate", tools.cxTwoPoint)
     toolbox.register("select", tools.selNSGA2)
 
     cpu_count = multiprocessing.cpu_count()
+    pop = toolbox.population(n=pop_size)  # type: ignore
 
-    # Create population outside pool context
-    pop: List[Any] = toolbox.population(n=pop_size)  # type: ignore
-
-    # Smart seeds just need to snake-fill; sort order is already handled by the list
+    # Seed with heuristic (snake fill)
     num_seeds = max(2, int(pop_size * 0.25))
-
-    # Simple snake generator since data is sorted
-    # Generates indices [0, 0, 0, 1, 1, 1...] based on column fill
     total_cols = num_bays * num_rows
     smart_genome = [0] * N
     curr_col = 0
@@ -332,85 +246,64 @@ def solve_stowage_genetic(containers: List[Cont], num_bays: int, num_rows: int, 
         if curr_h >= max_tiers:
             curr_col = (curr_col + 1) % total_cols
             curr_h = 0
-
     for i in range(num_seeds):
         pop[i] = creator.Individual(smart_genome)  # type: ignore
 
-    # --- Initial evaluation using local function (no pool needed) ---
+    # Initial Eval
     fitnesses = [evaluate_local(
         ind, sorted_containers, num_bays, num_rows, max_tiers) for ind in pop]
-
-    # DEBUG: Check what we're getting
-    if fitnesses:
-        print(f"DEBUG: First fitness value: {fitnesses[0]}")
-        print(f"DEBUG: Type: {type(fitnesses[0])}")
-        print(
-            f"DEBUG: Length: {len(fitnesses[0]) if hasattr(fitnesses[0], '__len__') else 'N/A'}")
-
     for ind, fit in zip(pop, fitnesses):
         ind.fitness.values = fit
     tools.emo.assignCrowdingDist(pop)
 
-    # Now start the pool for parallel evolution
+    # Evolution
     with multiprocessing.Pool(
         processes=cpu_count,
         initializer=init_worker,
-        # Pass the SORTED containers to workers
         initargs=(sorted_containers, num_bays, num_rows, max_tiers)
     ) as pool:
-
         toolbox.register("map", pool.map)
 
-        toolbox.register("map", pool.map)
-
-        # --- Evolution Loop ---
         for gen in range(1, n_gen + 1):
             offspring = tools.selTournamentDCD(pop, len(pop))
             offspring = [toolbox.clone(ind) for ind in offspring]
 
             for ind1, ind2 in zip(offspring[::2], offspring[1::2]):
-                if random.random() < 0.6:
+                if random.random() < 0.7:
                     toolbox.mate(ind1, ind2)  # type: ignore
                     del ind1.fitness.values
                     del ind2.fitness.values
 
             for ind in offspring:
-                if random.random() < 0.4:
+                if random.random() < 0.1:
                     toolbox.mutate(ind)  # type: ignore
                     del ind.fitness.values
 
             invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-            # Use pool.map for parallel evaluation during evolution
             fitnesses = toolbox.map(
                 toolbox.evaluate, invalid_ind)  # type: ignore
             for ind, fit in zip(invalid_ind, fitnesses):
                 ind.fitness.values = fit
 
-            # Local Search
+            # Local Search (Every 10 gens)
             if gen % 10 == 0:
                 offspring.sort(key=lambda x: sum(x.fitness.values))
-                top_10 = int(len(offspring) * 0.10)
-                # Note: pass sorted_containers here too
-                for i in range(top_10):
-                    elite = offspring[i]
-                    mod = apply_memetic_local_search(
-                        elite, sorted_containers, num_bays, num_rows, max_tiers)
-                    if mod:
-                        # Use local evaluation for single individual
-                        new_fit = evaluate_local(
-                            elite, sorted_containers, num_bays, num_rows, max_tiers)
-                        elite.fitness.values = new_fit
+                for i in range(int(len(offspring) * 0.05)):
+                    if apply_memetic_local_search(offspring[i], sorted_containers, num_bays, num_rows, max_tiers):
+                        del offspring[i].fitness.values  # Re-eval next loop
 
             pop = toolbox.select(pop + offspring, pop_size)  # type: ignore
 
-    # After pool is closed, do final selection
+    # Best Result
     pareto_fronts = tools.sortNondominated(
         pop, len(pop), first_front_only=True)
-    best_ind = min(pareto_fronts[0],
-                   key=lambda ind: sum(ind.fitness.values))
+    # Weight objectives: Safety (1) > Rehandles (0) > Balance (2)
+    # But since we minimize, we just look for min sum or prioritized sort
+    best_ind = min(
+        pareto_fronts[0], key=lambda ind: ind.fitness.values[1] * 1000 + ind.fitness.values[0])
 
-    best_ship = build_ship_from_individual(
+    best_vessel = build_vessel_from_individual(
         cast(List[int], best_ind),
         sorted_containers, num_bays, num_rows, max_tiers
     )
-    return best_ship
+    return best_vessel

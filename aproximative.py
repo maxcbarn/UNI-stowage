@@ -1,238 +1,166 @@
 from random import seed
-from typing import List, Tuple, TypedDict, Optional, Dict
-
-from common import Vessel, Container, Slot, SlotCoord, Range, Numeric
-from itertools import product
 import argparse
+import random
+from typing import List, Tuple, Optional, Dict
 
-# --- AMBROSINO & SCIOMACHEN WEIGHTED SCORING CONFIGURATION ---
-# References:
-# [1] Ambrosino et al. (2004): "Stowing a containership: the Master Bay Plan problem"
-# [2] Sciomachen & Tanfani (2003): "Problems and methods for stowage planning"
-
-# Weight for avoiding a rehandle (Overstow).
-W_REHANDLE = 10_000.0
-
-# Weight for placing heavy containers on top of light ones.
-W_WEIGHT_INVERSION = 5_000.0
-
-# Bonus for "Homogeneous Stacking" (Matching Discharge Ports).
-W_STACK_BONUS = 5_000.0
-
-# Sciomachen (2003) notes that distributing containers across bays allows
-# parallel crane operations, reducing total port stay time.
-W_CRANE_BALANCE = 500.0
-
-# Weights for Center of Gravity (Stability) Penalties.
-W_MOMENT_TIER = 1.0  # Vertical Moment (Minimizing VCG)
-W_MOMENT_ROW = 1.0   # Transverse Moment (Minimizing List/TCG)
-# -----------------------------------------------------------
-
-
-class PhysicsUtils:
-    class Moments(TypedDict):
-        bay: float
-        row: float
-        tier: float
-
-    @staticmethod
-    def calculate_rehandles(vessel: Vessel) -> int:
-        """Counts how many times a later-port container sits on an earlier-port container."""
-        total = 0
-        for b, r in product(range(vessel.bays), range(vessel.rows)):
-            stack: List[Optional[Slot]] = [vessel.get_slot_at(SlotCoord(b, r, t))
-                                           for t in range(vessel.tiers)]
-            filled: List[Slot] = [
-                s for s in stack if s is not None and s.container is not None]
-
-            for i in range(1, len(filled)):
-                below = filled[i-1].container
-                above = filled[i].container
-                if above and below and above.dischargePort > below.dischargePort:
-                    total += 1
-        return total
-
-    @staticmethod
-    def calculate_moments(vessel: Vessel) -> Moments:
-        """Calculates Center of Gravity deviations."""
-        total_weight = 0.0
-        moment_bay = 0.0
-        moment_row = 0.0
-        moment_tier = 0.0
-
-        center_bay = (vessel.bays - 1) / 2.0
-        center_row = (vessel.rows - 1) / 2.0
-
-        for slot in vessel.slots.values():
-            if slot.container:
-                w = slot.container.weight
-                total_weight += w
-                moment_bay += w * (slot.bay - center_bay)
-                moment_row += w * (slot.row - center_row)
-                moment_tier += w * slot.tier
-
-        if total_weight == 0:
-            return {"bay": 0.0, "row": 0.0, "tier": 0.0}
-
-        return {
-            "bay": moment_bay / total_weight,
-            "row": moment_row / total_weight,
-            "tier": moment_tier / total_weight
-        }
+# Import from the unified common library provided in the context
+from common import (
+    Vessel, Container, Slot, SlotCoord, Range, Numeric,
+    calculate_cost, CostReport,
+    W_REHANDLE, W_GM_FAIL, W_BALANCE
+)
 
 
 def get_center_out_order(n: int) -> List[int]:
     """
-    [CITATION] Improved search order inspired by Ambrosino et al. (2004).
-    Addresses 'Equilibrium Constraints' via center-out filling.
+    Returns indices in center-out order (e.g., 5 -> [2, 3, 1, 4, 0]).
+    Used for stability (loading from keel up and center out).
     """
     res: List[int] = []
     left, right = (n - 1) // 2, (n - 1) // 2 + 1
 
     if left >= 0 and left == (n - 1) / 2:
-        res.append(left)
+        res.append(int(left))
         left -= 1
 
     while left >= 0 or right < n:
         if right < n:
-            res.append(right)
+            res.append(int(right))
             right += 1
         if left >= 0:
-            res.append(left)
+            res.append(int(left))
             left -= 1
 
-    if not res and n > 0:
-        return list(range(n))
-    return res
+    return res if res else list(range(n))
 
 
 def score_move(vessel: Vessel, container: Container, slot: Slot, bay_density: int) -> float:
     """
-    Assigns a score to a placement using the Ambrosino Weighted System.
+    Heuristic Scoring Function.
     Higher Score = Better Move.
-    [UPDATED] Now accepts 'bay_density' to optimize crane split without O(N) loops.
+
+    Aligned with Master Cost Function:
+    1. Safety (Maximize GM -> Minimize VCG): Heavy items lower.
+    2. Efficiency (Minimize Rehandles): W_REHANDLE penalty.
+    3. Balance (Crane Workload): Distribute density.
     """
     score = 0.0
-    slot_below: Optional[Slot] = None
 
+    # --- 1. STABILITY (Minimize VCG) ---
+    # We use (Tier * Weight) as a proxy for VCG.
+    # Penalize placing heavy containers high up.
+    score -= (slot.tier * container.weight) * 10.0
+
+    # --- 2. EFFICIENCY (Minimize Rehandles) ---
     if slot.tier > 0:
         slot_below = vessel.get_slot_at(
             SlotCoord(slot.bay, slot.row, slot.tier - 1))
 
-    # --- 1. STABILITY COMPONENT (Ambrosino et al.) ---
-    score -= (slot.tier * container.weight / 1000.0) * W_MOMENT_TIER
+        if slot_below and slot_below.container:
+            # Overstow penalty (Critical)
+            if container.dischargePort > slot_below.container.dischargePort:
+                score -= W_REHANDLE
 
-    center_row = (vessel.rows - 1) / 2.0
-    dist_row = abs(slot.row - center_row)
-    score -= (dist_row * container.weight / 1000.0) * W_MOMENT_ROW
+            # Weight Inversion penalty (Secondary stability check)
+            if container.weight > slot_below.container.weight:
+                score -= 5000.0
 
-    # --- 2. OPERATIONAL COMPONENT (Ambrosino et al.) ---
-    if slot_below and slot_below.container:
-        # [CITATION] Minimize Rehandles
-        if container.dischargePort > slot_below.container.dischargePort:
-            score -= W_REHANDLE
+            # Homogeneous Stacking Bonus (Operational efficiency)
+            if container.dischargePort == slot_below.container.dischargePort:
+                score += 2000.0
 
-        # [CITATION] Minimize Weight Inversion
-        if container.weight > slot_below.container.weight:
-            score -= W_WEIGHT_INVERSION
-
-        # [CITATION] Homogeneous Stacks (Sciomachen & Tanfani)
-        if container.dischargePort == slot_below.container.dischargePort:
-            score += W_STACK_BONUS
-
-    # --- 3. CRANE WORKLOAD BALANCING (New Integration) ---
-    # [CITATION] Distribute cargo to allow parallel crane moves (Sciomachen 2003)
-    # Penalize bays that are already dense relative to others.
-    score -= (bay_density * W_CRANE_BALANCE)
+    # --- 3. BALANCE (Crane Workload) ---
+    # Penalize placing in bays that are already full to encourage spread/balance.
+    score -= (bay_density * 500.0)
 
     return score
 
 
 def heuristic_solver(containers: List[Container], vessel: Vessel) -> Tuple[Vessel, List[Container]]:
     """
-    Approximative Solver (Deterministic).
-    [CITATION] Implements a Constructive Heuristic (Section 4.1).
-    Uses 'Best-Fit' logic combined with hierarchical sorting (Ding & Chou, 2015).
+    Constructive Heuristic Solver.
+    Places containers one by one into the best available slot based on score_move.
     """
-
     # [CITATION] Ding & Chou (2015): Sorting by Discharge Port (DESC)
+    # This naturally minimizes rehandles and puts heavy items at bottom (if weights differ).
     load_list = sorted(containers, key=lambda c: (
         c.dischargePort, c.weight), reverse=True)
 
-    plan: List[Tuple[Container, Slot]] = []
     left_behind: List[Container] = []
 
-    # [CITATION] Ambrosino et al. (2004): Equilibrium Logic
+    # Equilibrium Logic: Fill from center bay/row outwards
     bay_order = get_center_out_order(vessel.bays)
-    row_order = get_center_out_order(vessel.rows)
 
-    # Pre-organize slots
-    slots_by_bay: Dict[int, List[Slot]] = {b: [] for b in range(vessel.bays)}
-    for slot in vessel.slots.values():
-        slots_by_bay[slot.bay].append(slot)
+    # Pre-calculate row orders once
+    row_orders = {b: get_center_out_order(
+        vessel.rows) for b in range(vessel.bays)}
 
-    # Sort slots inside each bay list
-    for b in slots_by_bay:
-        slots_by_bay[b].sort(key=lambda s: (
-            row_order.index(s.row),
-            s.tier
-        ))
-
-    # [OPTIMIZATION] Track bay density in O(1)
-    # Initialize with current state of vessel
-    bay_counts: Dict[int, int] = {b: 0 for b in range(vessel.bays)}
+    # Track bay density for O(1) crane balancing
+    bay_counts = {b: 0 for b in range(vessel.bays)}
     for s in vessel.slots.values():
         if s.container:
             bay_counts[s.bay] += 1
 
+    # Main placement loop
     for container in load_list:
-        placed = False
+        best_slot: Optional[Slot] = None
+        best_score = float('-inf')
 
-        # Iterate Bays using Center-Out Order
+        # Check every bay in center-out order
         for bay_idx in bay_order:
-            best_slot: Optional[Slot] = None
-            best_score = float('-inf')
+            # Check every row in center-out order
+            for row_idx in row_orders[bay_idx]:
+                # Find the lowest empty tier in this column (Stacking constraint)
+                target_tier = -1
+                for t in range(vessel.tiers):
+                    coord = SlotCoord(bay_idx, row_idx, t)
+                    slot = vessel.get_slot_at(coord)
+                    if slot and slot.is_free:
+                        target_tier = t
+                        break
 
-            # Search slots in this bay
-            for slot in slots_by_bay[bay_idx]:
-                if vessel.check_hard_constraints(container, slot):
+                # If column is full, skip
+                if target_tier == -1:
+                    continue
 
-                    # Pass the pre-calculated density for this bay
-                    s = score_move(vessel, container, slot,
-                                   bay_counts[bay_idx])
+                # Evaluate this specific move
+                candidate_slot = vessel.get_slot_at(
+                    SlotCoord(bay_idx, row_idx, target_tier))
 
-                    if s > best_score:
-                        best_score = s
-                        best_slot = slot
+                # Double check hard constraints
+                if candidate_slot and vessel.check_hard_constraints(container, candidate_slot):
+                    # Use local scoring function (NOT global calculate_cost)
+                    score = score_move(vessel, container,
+                                       candidate_slot, bay_counts[bay_idx])
 
-            if best_slot:
-                vessel.place(container, best_slot)
-                plan.append((container, best_slot))
+                    if score > best_score:
+                        best_score = score
+                        best_slot = candidate_slot
 
-                # [OPTIMIZATION] Update density tracker instantly
-                bay_counts[best_slot.bay] += 1
-
-                placed = True
-                break
-
-        if not placed:
+        # Commit the best move found
+        if best_slot:
+            vessel.place(container, best_slot)
+            bay_counts[best_slot.bay] += 1
+        else:
             left_behind.append(container)
 
     return vessel, left_behind
 
 
 def print_fitness_report(vessel: Vessel) -> None:
-    rehandles = PhysicsUtils.calculate_rehandles(vessel)
-    moments = PhysicsUtils.calculate_moments(vessel)
+    """
+    Uses the unified CostReport from common.py to display results.
+    """
+    report = CostReport(vessel)
 
-    print("\n--- PHYSICS & FITNESS REPORT ---")
-    print(f"Total Rehandles (Overstows): {rehandles} (Lower is better)")
-    print(
-        f"Vertical Stability (Tier Moment): {moments['tier']:.2f} (Lower is better)")
-    print(
-        f"Longitudinal Balance (Bay Moment): {moments['bay']:.2f} (Target: 0.0)")
-    print(
-        f"Transverse Balance (Row Moment): {moments['row']:.2f} (Target: 0.0)")
+    print("\n--- UNIFIED PHYSICS & FITNESS REPORT ---")
+    print(f"Safety (GM):            {report.gm:.4f} m  (Target: >= 1.0m)")
+    print(f"Efficiency (Rehandles): {report.rehandles}")
+    print(f"Trim (Bay Moment):      {report.bay_moment:.4f}")
+    print(f"List (Row Moment):      {report.row_moment:.4f}")
+    print(f"Vertical Moment (VCG):  {report.tier_moment:.4f}")
+
+    print(f"--> MASTER COST SCORE:  {report.total_cost:.4f}")
 
 
 def gen_case(
@@ -244,57 +172,46 @@ def gen_case(
         ports: Range[int],
 ) -> None:
 
-    ship = Vessel(bays(), rows(), tiers())
-
+    # Use keyword args to avoid dataclass ordering issues
+    vessel = Vessel(bays=bays(), rows=rows(), tiers=tiers())
     cargo_amt = container_amount()
 
-    cargo = [Container.gen_random(weight, ports)
-             for _ in range(cargo_amt)]
-
     print(
-        f"\n[GENERATION] Ship Slots: {ship.capacity} | Containers: {cargo_amt}")
+        f"\n[GENERATION] Ship: {vessel.bays}x{vessel.rows}x{vessel.tiers} (Cap: {vessel.capacity}) | Cargo: {cargo_amt}")
 
-    ship, left_behind = heuristic_solver(cargo, ship)
+    cargo = [Container.gen_random(weight, ports) for _ in range(cargo_amt)]
+
+    # Run Solver
+    vessel, left_behind = heuristic_solver(cargo, vessel)
 
     print("\n--- STOWAGE RESULTS ---")
-
-    count = 0
-    for slot in ship.slots.values():
-        if slot.container:
-            if count < 20:
-                print(
-                    f"Placed {slot.container} at Bay:{slot.bay} Row:{slot.row} Tier:{slot.tier}")
-            count += 1
-
-    if count > 20:
-        print(f"... and {count-20} more.")
+    stowed_count = vessel.containerAmount
+    # Handle division by zero if empty list
+    pct = (stowed_count / len(cargo)) * 100 if cargo else 0.0
+    print(f"Stowed: {stowed_count}/{len(cargo)} ({pct:.1f}%)")
 
     if left_behind:
-        print(f"\n[WARNING] Could not stow {len(left_behind)} containers.")
+        print(f"[WARNING] {len(left_behind)} containers left on dock!")
+        # Calculate cost including leftovers penalty
+        total_cost = calculate_cost(vessel, left_behind)
+        print(f"--> COST WITH LEFTOVERS: {total_cost:.4f}")
     else:
-        print("\n[SUCCESS] All containers stowed.")
+        print("[SUCCESS] 100% Stowage Achieved.")
 
-    print_fitness_report(ship)
+    print_fitness_report(vessel)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Physics-Aware Solver with Ambrosino & Crane Balancing",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    ship_group = parser.add_argument_group("Ship Configuration")
-    ship_group.add_argument("--bays", nargs="+", type=int, default=[5])
-    ship_group.add_argument("--rows", nargs="+", type=int, default=[5])
-    ship_group.add_argument("--tiers", nargs="+", type=int, default=[5])
-
-    cargo_group = parser.add_argument_group("Cargo Configuration")
-    cargo_group.add_argument("--containers", nargs="+",
-                             type=int, default=[50, 100])
-    cargo_group.add_argument("--weight", nargs="+",
-                             type=float, default=[1000.0, 30000.0])
-    cargo_group.add_argument("--ports", nargs="+", type=int, default=[1, 5])
-
+    parser.add_argument("--bays", nargs="+", type=int, default=[5])
+    parser.add_argument("--rows", nargs="+", type=int, default=[5])
+    parser.add_argument("--tiers", nargs="+", type=int, default=[5])
+    parser.add_argument("--containers", nargs="+", type=int, default=[50, 100])
+    parser.add_argument("--weight", nargs="+", type=float,
+                        default=[1000.0, 30000.0])
+    parser.add_argument("--ports", nargs="+", type=int, default=[1, 5])
     parser.add_argument("--seed", type=int, default=None)
 
     args = parser.parse_args()
@@ -313,6 +230,7 @@ def main() -> None:
 
     if args.seed is not None:
         seed(args.seed)
+        random.seed(args.seed)
         print(f"--- SEED: {args.seed} ---")
 
     try:
@@ -324,9 +242,8 @@ def main() -> None:
             weight=to_range(args.weight, is_float=True),
             ports=to_range(args.ports),
         )
-
     except ValueError as e:
-        print(f"Error parsing inputs: {e}")
+        print(f"Error: {e}")
 
 
 if __name__ == "__main__":

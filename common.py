@@ -1,7 +1,46 @@
-from typing import List, Dict,  Optional, Tuple, TypeVar, Generic, TypedDict
+from __future__ import annotations
+import json
+
+import numpy as np
+from typing import List, Dict, Optional, Tuple, TypeVar, Generic, TypedDict
 import random
 from itertools import product
 from dataclasses import dataclass, field
+from pathlib import Path
+
+
+# Sum of 'constWeight' for all 24 bays (Calculated from file)
+LIGHTSHIP_WEIGHT = 60787.0
+
+# Weighted Average of 'constWeighVcg' (All bays are 18.0 in your file)
+LIGHTSHIP_VCG = 18.0
+
+# Hydrostatic Table: Displacement (tons) -> KM (Metacenter Height in meters)
+HYDRO_X = [
+    54037.0, 67172.0, 80797.0, 94889.0, 109446.0, 124451.0, 139900.0,
+    155794.0, 172144.0, 188981.0, 206337.0, 224263.0, 242694.0, 261543.0,
+    280761.0, 300312.0, 320171.0, 340320.0, 360740.0, 381416.0, 402332.0,
+    423469.0, 444807.0, 465746.0, 486668.0, 507733.0, 511962.0
+]
+
+HYDRO_Y = [
+    45.70, 40.72, 36.84, 34.14, 32.21, 30.67, 29.50,
+    28.61, 27.94, 27.45, 27.11, 26.90, 26.77, 26.68,
+    26.64, 26.63, 26.66, 26.71, 26.79, 26.90, 27.03,
+    27.17, 27.32, 26.92, 27.10, 27.30, 27.34
+]
+
+# --- PHYSICS CONSTANTS (The Source of Truth) ---
+# Meters (Vertical Center of Gravity of empty ship)
+AVG_CONTAINER_WEIGHT = 14.0  # Tons (Fallback)
+CONTAINER_HEIGHT = 2.6       # Meters
+MIN_GM = 1.0                 # Meters (Minimum safety limit)
+
+# --- UNIFIED WEIGHTS ---
+W_REHANDLE = 10000.0    # Efficiency
+W_GM_FAIL = 50000.0     # Safety (Highest Priority)
+W_BALANCE = 1.0         # Quality (Tie-breaker)
+W_LEFTOVER = 100000.0   # Critical (Must load cargo)
 
 Numeric = TypeVar("Numeric", int, float)
 
@@ -14,30 +53,6 @@ class Cont(TypedDict):
 
 type List3D[T] = List[List[List[T]]]
 type Ship = List3D[Optional[Cont]]
-
-
-@dataclass
-class CostReport:
-    ship: Ship
-    rehandles: int = field(init=False)
-    moments: Tuple[float, float, float] = field(init=False)
-
-    def __post_init__(self):
-        self.rehandles = RehandlesNumber(self.ship)
-        self.moments = BayMoment(self.ship), RowMoment(
-            self.ship), TierMoment(self.ship)
-
-    @property
-    def bay_moment(self) -> float:
-        return BayMoment(self.ship)
-
-    @property
-    def row_moment(self) -> float:
-        return RowMoment(self.ship)
-
-    @property
-    def tier_moment(self) -> float:
-        return TierMoment(self.ship)
 
 
 @dataclass
@@ -55,25 +70,13 @@ class Range(Generic[Numeric]):
 
 @dataclass
 class Container:
-    id: int = field(init=False)
+    id: int
     weight: float
+    height: float
     dischargePort: int
-    _static_id: int = field(default=0, repr=False)
-
-    def __post_init__(self):
-        type(self)._static_id += 1
-        self.id = type(self)._static_id
 
     def __repr__(self):
         return f"C({self.id}, P:{self.dischargePort}, {self.weight:.0f}kg)"
-
-    @classmethod
-    def from_cont(cls, cont: Cont):
-        return cls(cont['weight'], cont['dest'])
-
-    @classmethod
-    def gen_random(cls, weight: Range[float], port: Range[int]):
-        return cls(weight(), port())
 
 
 @dataclass
@@ -93,86 +96,60 @@ class SlotCoord:
     tier: int
 
 
+@dataclass
 class Vessel:
-    def __init__(self, bays: int = 0, rows: int = 0, tiers: int = 0):
-        self.bays, self.rows, self.tiers = bays, rows, tiers
+    bays: int = 0
+    rows: int = 0
+    tiers: int = 0
+
+    hydro_disp: List[float] = field(default_factory=lambda: HYDRO_X)
+    hydro_km: List[float] = field(default_factory=lambda: HYDRO_Y)
+
+    bays: int = 0
+    rows: int = 0
+    tiers: int = 0
+    lightship_weight: float = LIGHTSHIP_WEIGHT
+    lightship_vcg: float = LIGHTSHIP_VCG
+
+    def __post_init__(self):
         self.slots: Dict[SlotCoord, Slot] = {}
-        for b, r, t in product(range(bays), range(rows), range(tiers)):
+        for b, r, t in product(range(self.bays), range(self.rows), range(self.tiers)):
             self.slots[SlotCoord(b, r, t)] = Slot(b, r, t)
+
+    def JSON_str(self) -> str:
+        return json.dumps({
+            "bays": self.bays,
+            "rows": self.rows,
+            "tiers": self.tiers,
+            "lightship_weight": self.lightship_weight,
+            "lightship_vcg": self.lightship_vcg,
+            "slots": [
+                {
+                    "bay": coord.bay,
+                    "row": coord.row,
+                    "tier": coord.tier,
+                    "container": {
+                        "id": slot.container.id,
+                        "weight": slot.container.weight,
+                        "height": slot.container.height,
+                        "dischargePort": slot.container.dischargePort,
+                    } if slot.container else None,
+                }
+                for coord, slot in self.slots.items()
+                if slot.container
+            ],
+        })
 
     @property
     def containerAmount(self):
-        i = 0
-        for s in self.slots.values():
-            if s.container:
-                i += 1
+        return sum(1 for s in self.slots.values() if s.container)
 
-        return i
-
-    def __str__(self):
-        """
-        Visualizes the vessel layout.
-        Format: [ID|Dest] where ID=Container ID, Dest=Discharge Port.
-        """
-        lines = []
-        for b in range(self.bays):
-            lines.append(f"\n=== BAY {b} ===")
-
-            # Print Tiers from Top (highest index) to Bottom (0)
-            for t in range(self.tiers - 1, -1, -1):
-                row_cells = []
-                tier_label = f"T{t}"
-
-                for r in range(self.rows):
-                    slot = self.get_slot_at(SlotCoord(b, r, t))
-                    if slot and slot.container:
-                        c = slot.container
-                        # Format: [ID|Dest], e.g., [99|D2]
-                        # Uses :02d for 2-digit padding on ID
-                        cell = f"[{c.id:02d}|D{c.dischargePort}]"
-                    else:
-                        cell = "[ ..... ]"
-                    row_cells.append(cell)
-
-                # Join row cells with space
-                lines.append(f"{tier_label}: {' '.join(row_cells)}")
-
-            # Add Row numbers at the bottom of the bay
-            row_indices = [f"    R{r}   " for r in range(self.rows)]
-            lines.append("    " + " ".join(row_indices))
-
-        return "\n".join(lines)
-
-    @classmethod
-    def from_ship(cls, ship: Ship):
-        vessel = cls()
-
-        num_bays = len(ship)
-        num_rows = len(ship[0]) if num_bays > 0 else 0
-        num_tiers = len(ship[0][0]) if num_rows > 0 else 0
-
-        vessel.bays = num_bays
-        vessel.rows = num_rows
-        vessel.tiers = num_tiers
-
-        for b, bay in enumerate(ship):
-            for r, row in enumerate(bay):
-                for t, tier in enumerate(row):
-                    coord = SlotCoord(b, r, t)
-                    vessel.slots[coord] = Slot(b, r, t)
-                    if tier:
-                        vessel.slots[coord].container = Container.from_cont(
-                            tier)
-
-        return vessel
-
-    def get_slot_at(self, c: SlotCoord): return self.slots.get(c)
-
-    def place(self, c: Container, s: Slot): s.container = c
     @property
     def capacity(self): return len(self.slots)
 
-    # --- Constraints & Physics (Reused) ---
+    def get_slot_at(self, c: SlotCoord): return self.slots.get(c)
+    def place(self, c: Container, s: Slot): s.container = c
+
     def check_hard_constraints(self, c: Container, s: Slot):
         if not s.is_free:
             return False
@@ -182,275 +159,328 @@ class Vessel:
                 return False
         return True
 
+    def calculate_rehandles(self) -> int:
+        """
+        Counts overstows: heavy/later-port containers on top of light/earlier-port ones.
+        Optimized to iterate directly over slots without converting to 3D list.
+        """
+        total = 0
+        # Iterate only filled slots above tier 0
+        for coord, slot in self.slots.items():
+            if slot.tier > 0 and slot.container:
+                # Look strictly one tier down
+                below_coord = SlotCoord(coord.bay, coord.row, coord.tier - 1)
+                below_slot = self.slots.get(below_coord)
 
-def BuildStacks(num_bays: int, num_rows: int):
-    stacks: List[Tuple[int, int]] = []
-    for bay in range(num_bays):
-        for row in range(num_rows):
-            stacks.append((bay, row))
-    return stacks
+                if below_slot and below_slot.container:
+                    # Check Discharge Port Inversion (Heuristic standard)
+                    if slot.container.dischargePort > below_slot.container.dischargePort:
+                        total += 1
+        return total
 
+    def calculate_bay_moment(self) -> float:
+        """Calculates Longitudinal Moment (Trim)."""
+        if self.containerAmount == 0:
+            return 0.0
 
-def RehandlesNumber(ship: Ship) -> int:
-    total = 0
-    for bay in ship:
-        for row in bay:
-            for t in range(1, len(row)):
-                below = row[t - 1]
-                above = row[t]
+        center_bay = (self.bays - 1) / 2.0
+        total_moment = 0.0
+        total_weight = 0.0
 
-                if below is None or above is None:
-                    continue
+        for slot in self.slots.values():
+            if slot.container:
+                w = slot.container.weight
+                total_weight += w
+                total_moment += w * (slot.bay - center_bay)
 
-                if above['dest'] > below['dest']:
-                    total += 1
-    return total
+        return total_moment / total_weight if total_weight > 0 else 0.0
 
+    def calculate_row_moment(self) -> float:
+        """Calculates Transverse Moment (List/Heel)."""
+        if self.containerAmount == 0:
+            return 0.0
 
-def BayMoment(ship: Ship):
-    baySize = len(ship)
-    center_bay = (baySize - 1) / 2.0
-    total_moment = 0.0
-    total_weight = 0.0
+        center_row = (self.rows - 1) / 2.0
+        total_moment = 0.0
+        total_weight = 0.0
 
-    for i, bay in enumerate(ship):
-        bay_weight = 0.0
-        for row in bay:
-            for container in row:
-                if container is not None and 'weight' in container:
-                    bay_weight += container['weight']
+        for slot in self.slots.values():
+            if slot.container:
+                w = slot.container.weight
+                total_weight += w
+                total_moment += w * (slot.row - center_row)
 
-        total_moment += bay_weight * (i - center_bay)
-        total_weight += bay_weight
+        return total_moment / total_weight if total_weight > 0 else 0.0
 
-    if total_weight == 0:
-        return 0.0
+    def calculate_tier_moment(self) -> float:
+        """Calculates Vertical Moment (Proxy for VCG)."""
+        if self.containerAmount == 0:
+            return 0.0
 
-    return total_moment / total_weight
+        total_moment = 0.0
+        total_weight = 0.0
 
+        for slot in self.slots.values():
+            if slot.container:
+                w = slot.container.weight
+                total_weight += w
+                total_moment += w * slot.tier
 
-def RowMoment(ship: Ship) -> float:
-    rowSize = len(ship[0])
-    center_row = (rowSize - 1) / 2.0
-    total_moment = 0.0
-    total_weight = 0.0
-
-    for bay in ship:
-        for j, row in enumerate(bay):
-            row_weight = 0.0
-
-            for container in row:
-                if container is not None and 'weight' in container:
-                    row_weight += container['weight']
-
-            total_moment += row_weight * (j - center_row)
-            total_weight += row_weight
-
-    if total_weight == 0:
-        return 0.0
-
-    return total_moment / total_weight
-
-
-def TierMoment(ship: Ship) -> float:
-    total_moment = 0.0
-    total_weight = 0.0
-
-    for bay in ship:
-        for row in bay:
-            for t, container in enumerate(row):
-                if container is not None and 'weight' in container:
-                    weight = container['weight']
-
-                    total_moment += weight * t
-                    total_weight += weight
-
-    if total_weight == 0:
-        return 0.0
-
-    return total_moment / total_weight
+        return total_moment / total_weight if total_weight > 0 else 0.0
 
 
-def ContainerRamdom(number: int) -> List[Cont]:
+def calculate_gm(vessel: Vessel) -> float:
+    """Calculates GM from either a Vessel object or a Ship (List3D)."""
+    cargo_weight = 0.0
+    cargo_moment = 0.0
 
-    # Generating 250 containers starting from id 11
-    containers_250: List[Cont] = [
-        {
-            'id': i,
-            'weight': round(random.uniform(1.0, 100.0), 1),
-            'dest': random.randint(1, 5)
-        }
-        for i in range(1, number + 1)
-    ]
+    slots = vessel.slots.values()
+    for slot in slots:
+        if slot.container:
+            w = slot.container.weight
+            h = vessel.lightship_vcg + (slot.tier * CONTAINER_HEIGHT)
+            cargo_weight += w
+            cargo_moment += (w * h)
 
-    return containers_250
+    disp = vessel.lightship_weight + cargo_weight
+    if disp == 0:
+        return 20.0  # Fallback for empty/error
 
-
-def calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
-    # 1. Rehandles
-    """ rehandles = 0
-    for b, r in product(range(vessel.bays), range(vessel.rows)):
-        stack = [vessel.get_slot_at(SlotCoord(b, r, t))
-                 for t in range(vessel.tiers)]
-
-        def get(s: Slot | None): return s.container if s else None
-        filled: List[Optional[Container]] = [get(s) for s in stack if get(s)]
-        for i in range(1, len(filled)):
-            curr = filled[i]
-            prev = filled[i-1]
-            if curr and prev and curr.dischargePort > prev.dischargePort:
-                rehandles += 1 """
-
-    # 2. Moments
-    # (Simplified for MCTS speed: just track Stability)
-    """ tier_moment = sum(
-        s.tier * s.container.weight for s in vessel.slots.values() if s.container) """
-
-    ship = vessel_to_ship(vessel)
-
-    # Cost Function
-    cost = RehandlesNumber(ship) + abs(BayMoment(ship)) + \
-        abs(RowMoment(ship)) + abs(TierMoment(ship))
-
-    return cost
+    vcg = ((vessel.lightship_weight * vessel.lightship_vcg) + cargo_moment) / disp
+    km = np.interp(disp, vessel.hydro_disp, vessel.hydro_km)
+    return km - vcg
 
 
-def __calculate_cost(vessel: Vessel, leftovers: List[Container]) -> float:
+def calculate_cost(vessel: Vessel, leftovers: List[Container] = []) -> float:
+    # 1. Safety (GM)
+    # Note: calculate_gm logic is also partly redundant now,
+    # but we keep it for the hydrostatic lookup.
+    gm = calculate_gm(vessel)
+    cost_gm = (MIN_GM - gm) * W_GM_FAIL if gm < MIN_GM else 0.0
+
+    # 2. Efficiency (Rehandles) - DIRECT CALL
+    cost_rehandles = vessel.calculate_rehandles() * W_REHANDLE
+
+    # 3. Balance (Moments) - DIRECT CALLS
+    cost_balance = (abs(vessel.calculate_bay_moment()) +
+                    abs(vessel.calculate_row_moment())) * W_BALANCE
+
+    # 4. Critical (Leftovers)
+    cost_leftover = len(leftovers) * W_LEFTOVER
+
+    return cost_gm + cost_rehandles + cost_balance + cost_leftover
+
+# --- DATA STRUCTURES & UTILS ---
+
+
+@dataclass
+class CostReport:
+    vessel: Vessel
+    rehandles: int = field(init=False)
+    moments: Tuple[float, float, float] = field(init=False)
+    gm: float = field(init=False)
+    total_cost: float = field(init=False)
+
+    def __post_init__(self):
+        self.rehandles = self.vessel.calculate_rehandles()
+        self.moments = (self.vessel.calculate_bay_moment(
+        ), self.vessel.calculate_row_moment(), self.vessel.calculate_tier_moment())
+        self.gm = calculate_gm(self.vessel)
+
+        # Calculate cost parts
+        c_gm = (MIN_GM - self.gm) * W_GM_FAIL if self.gm < MIN_GM else 0.0
+        c_re = self.rehandles * W_REHANDLE
+        c_bal = (abs(self.moments[0]) + abs(self.moments[1])) * W_BALANCE
+        self.total_cost = c_gm + c_re + c_bal
+
+    @classmethod
+    def header(cls):
+        return "bays, rows, tiers, lightVCG, lightWeight, hydroDisp(x), hydroKM(y),cost, rehandles, bayMoment, rowMoment, tierMoment, gm".strip()
+
+    def log(self):
+        return f"{self.vessel.bays}, {self.vessel.rows}, {self.vessel.tiers}, {self.vessel.lightship_vcg}, {self.vessel.lightship_weight}, {self.vessel.hydro_km}, {self.vessel.hydro_disp}, {self.total_cost}, {self.rehandles}, {self.bay_moment}, {self.row_moment}, {self.tier_moment}, {self.gm}".strip()
+
+    @property
+    def bay_moment(self) -> float: return self.moments[0]
+    @property
+    def row_moment(self) -> float: return self.moments[1]
+    @property
+    def tier_moment(self) -> float: return self.moments[2]
+
+
+def conts_to_containers(cs: List[Cont]) -> List[Container]:
+    return [Container(c['id'], c['weight'], 2.745, c['dest']) for c in cs]
+
+
+def parse_benchmark_vessel(filepath: Path) -> Vessel:
     """
-    Calculates a cost score based on the hierarchy found in:
-    - Sciomachen & Tanfani (2003): Maximize loaded cargo first.
-    - Ding & Chou (2015): Minimize shifts/rehandles second.
-    - Ambrosino et al. (2004): Stability as a constraint/secondary objective.
+    Parses vessel_L.txt to extract dimensions AND physics data.
+
+    Extracts:
+    1. Global Dimensions (# Ship)
+    2. Hydrostatic Table (## HydroPoints -> Displacement, Metacenter)
+    3. Lightship Weight & VCG (Sum/Avg of ## Bay -> constWeight, constWeighVcg)
     """
+    # Default values
+    bays, rows, tiers = 0, 0, 0
+    hydro_disp: List[float] = []
+    hydro_km: List[float] = []
 
-    # --- WEIGHTS (Order of Magnitude Strategy) ---
+    total_bay_weight = 0.0
+    total_bay_moment = 0.0
 
-    # Priority 1: Cargo Maximization
-    # Must be > (Max_Rehandles * W_REHANDLE)
-    # Max rehandles approx = 60 slots * 1000 = 60,000. So 100,000 is safe.
-    W_LEFTOVER = 100_000.0
-
-    # Priority 2: Operational Efficiency (Rehandles)
-    # Must be > (Max_Stability_Deviation * W_STABILITY)
-    W_REHANDLE = 1_000.0
-
-    # Priority 3: Stability Optimization (Tie-Breakers)
-    # Penalties for deviating from perfect trim/list.
-    W_MOMENT = 10.0
-
-    ship = vessel_to_ship(vessel)
-
-    # 1. Critical Penalty: Containers left on the dock
-    # - Primary objective is "load max containers"
-    cost_leftovers = len(leftovers) * W_LEFTOVER
-
-    # 2. Operational Penalty: Rehandles (Overstows)
-    # - Objective is "reduce number of shifts"
-    cost_rehandles = RehandlesNumber(ship) * W_REHANDLE
-
-    # 3. Stability Penalty: Moments (Center of Gravity deviations)
-    # - Secondary optimization for fuel/ballast
-    # We sum absolute deviations for Bay (Longitudinal), Row (Transversal), Tier (Vertical)
-    # Note: Tier moment (Vertical) is usually just minimized, not zeroed,
-    # but for simplicity we treat higher CG as 'costly' here.
-    cost_stability = (abs(BayMoment(ship)) +
-                      abs(RowMoment(ship)) +
-                      abs(TierMoment(ship))) * W_MOMENT
-
-    total_cost = cost_leftovers + cost_rehandles + cost_stability
-
-    return total_cost
-
-
-def container_to_cont(c: Container | None) -> Optional[Cont]:
-    if not c:
-        return None
-
-    return {
-        'id': c.id,
-        'weight': c.weight,
-        'dest': c.dischargePort
-    }
-
-
-def vessel_to_ship(vessel: Vessel) -> Ship:
-    def getContainer(s: Slot | None):
-        if s is None:
-            return None
-        return s.container
-
-    ship: Ship = [[[container_to_cont(getContainer(vessel.get_slot_at(SlotCoord(b, r, t)))) for t in range(
-        vessel.tiers)] for r in range(vessel.rows)] for b in range(vessel.bays)]
-
-    return ship
-
-
-def ship_to_vessel(ship: Ship) -> Tuple[Vessel, List[Container]]:
-    return Vessel.from_ship(ship), []
-
-
-def cont_to_containter(conts: List[Cont]) -> List[Container]:
-    return [Container(c['weight'], c['dest']) for c in conts]
-
-
-def parse_benchmark_containers(filepath: str) -> List[Cont]:
-    containers = []
-    transport_types = {}
+    # State flags
+    section_hydro = False
 
     with open(filepath, 'r') as f:
         lines = f.readlines()
 
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+
+        # --- 1. Dimensions ---
+        if line.startswith("# Ship:"):
+            # Format: # Ship: bays stacks tiers ...
+            # Next line: 24 22 21 0.100
+            parts = lines[i+1].split()
+            bays = int(parts[0])
+            rows = int(parts[1])
+            tiers = int(parts[2])
+            section_hydro = False
+
+        # --- 2. Hydrostatics ---
+        elif line.startswith("## HydroPoints:"):
+            # Format: displacement minLcg maxLcg metacenter
+            section_hydro = True
+            continue  # Skip header
+
+        elif line.startswith("##"):
+            # Any other section header kills the Hydro state
+            section_hydro = False
+
+        # --- 3. Lightship Weight (Bay Sections) ---
+        if line.startswith("## Bay:"):
+            # Format: ## Bay: index lcg ... constWeight constWeighVcg
+            # Next line: 0 161.2 -2450 1850 46750 2440.0 18.0
+            data_line = lines[i+1].strip()
+            parts = data_line.split()
+
+            # Index 5 = constWeight, Index 6 = constWeighVcg
+            if len(parts) >= 7:
+                w = float(parts[5])
+                vcg = float(parts[6])
+
+                total_bay_weight += w
+                total_bay_moment += (w * vcg)
+
+        # --- Data Parsing (Context Sensitive) ---
+        elif section_hydro:
+            # We are inside the HydroPoints block
+            parts = line.split()
+            if len(parts) == 4 and parts[0].replace('.', '', 1).isdigit():
+                # Col 0: Displacement, Col 3: Metacenter (KM)
+                hydro_disp.append(float(parts[0]))
+                hydro_km.append(float(parts[3]))
+
+    # Calculate Weighted Average VCG for the Lightship
+    if total_bay_weight > 0:
+        lightship_vcg = total_bay_moment / total_bay_weight
+    else:
+        lightship_vcg = 0.0
+
+    return Vessel(
+        bays=bays,
+        rows=rows,
+        tiers=tiers,
+        lightship_weight=total_bay_weight,
+        lightship_vcg=lightship_vcg,
+        hydro_disp=hydro_disp,
+        hydro_km=hydro_km
+    )
+
+
+def parse_benchmark_containers(filepath: Path) -> List[Container]:
+    """
+    Parses VLHigh1.txt for container weights, heights, and load list.
+
+    Transport type table format:
+        id  length=(20|40)  weight  type=(DC|RC|HC|HR)
+
+    Height is derived from the type column:
+        HC / HR  →  2.9 m  (High Cube)
+        DC / RC  →  2.6 m  (Standard)
+    """
+    # Standard container height (DC, RC) in metres
+    CONTAINER_HEIGHT_STANDARD = 2.6
+    # High-Cube container height (HC, HR) in metres
+    CONTAINER_HEIGHT_HC = 2.9
+
+    # Container types that are High Cube
+    _HIGH_CUBE_TYPES = {"HC", "HR"}
+
+    containers: List[Container] = []
+
+    # Maps transport type id → (weight, height)
+    transport_props: Dict[int, tuple[float, float]] = {}
+
+    with open(filepath, "r") as f:
+        lines = f.readlines()
+
     mode = None
+
     for line in lines:
         line = line.strip()
         if not line or line.startswith("//"):
             continue
 
-        if line.startswith("# Transport type"):
-            mode = "TYPES"
+        # --- Section detection ---
+        if "# Transport type" in line:
+            mode = "WEIGHTS"
             continue
-        elif line.startswith("# Containers"):
-            mode = "CONTAINERS"
+        elif "# Container" in line:   # matches 'Container' and 'Containers'
+            mode = "LOADLIST"
             continue
 
         parts = line.split()
-        if mode == "TYPES":
-            # format: id length weight type
-            type_id = int(parts[0])
-            weight = float(parts[2])
-            transport_types[type_id] = weight
-        elif mode == "CONTAINERS":
-            # format: id port type
-            c_id = int(parts[0])
-            port = int(parts[1])
-            t_type = int(parts[2])
 
-            containers.append({
-                "id": c_id,
-                "weight": transport_types[t_type],
-                "dest": port
-            })
+        # Skip section headers and comment lines (first token not a digit)
+        if not parts[0].isdigit():
+            continue
+
+        try:
+            if mode == "WEIGHTS":
+                # Format: id  length  weight  type
+                # e.g.:   21  40      3       HC
+                t_id = int(parts[0])
+                weight = float(parts[2])
+                container_type = parts[3].upper()
+                height = (
+                    CONTAINER_HEIGHT_HC
+                    if container_type in _HIGH_CUBE_TYPES
+                    else CONTAINER_HEIGHT_STANDARD
+                )
+                transport_props[t_id] = (weight, height)
+
+            elif mode == "LOADLIST":
+                # Format (with position):   startPort endPort typeId bay stack tier slot
+                # Format (without position): startPort endPort typeId
+                dest_port = int(parts[1])
+                type_id = int(parts[2])
+
+                if type_id in transport_props:
+                    weight, height = transport_props[type_id]
+                    containers.append(
+                        Container(
+                            id=len(containers),
+                            weight=weight,
+                            height=height,
+                            dischargePort=dest_port,
+                        )
+                    )
+
+        except (ValueError, IndexError):
+            continue
+
     return containers
-
-
-def parse_benchmark_vessel(filepath: str) -> Tuple[int, int, int]:
-    """
-    Extracts dimensions from the benchmark vessel file.
-    Note: Benchmark vessels are often non-rectangular; 
-    we extract max dimensions for your current Ship/Vessel classes.
-    """
-    max_bays = 0
-    max_stacks = 0
-    max_tiers = 0
-
-    with open(filepath, 'r') as f:
-        for line in f:
-            if line.startswith("# Ship:"):
-                parts = next(f).split()
-                # The file defines total bays, stacks, tiers
-                return int(parts[0]), int(parts[1]), int(parts[2])
-    return 0, 0, 0
-
-
-def count_cont_ship(ship: Ship):
-    return sum(1 for bay in ship for row in bay for slot in row if slot)
