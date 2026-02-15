@@ -1,8 +1,12 @@
 from collections import defaultdict
 import multiprocessing
+import random
 from typing import Callable, Dict, List, Set, Tuple, TypedDict
+
+from pandas._libs.tslibs.fields import build_field_sarray
+from pandas.core.dtypes.cast import find_result_type
 from common import CostReport, Vessel, Container, conts_to_containers, parse_benchmark_containers, parse_benchmark_vessel
-from probabilistic import mcts_search
+from probabilistic import solve_rolling_horizon
 from genetic import solve_stowage_genetic
 from aproximative import heuristic_solver
 from exact import solve_stowage_lp
@@ -19,78 +23,80 @@ ship = []
 vessel = None
 
 
-def Genetic(containers: List[Container], vessel: Vessel):
+def Genetic(containers: List[Container], vessel: Vessel, exe: int):
     def run():
         nonlocal vessel, containers
         vessel = solve_stowage_genetic(containers, vessel)
     timeSeconds = timeit.timeit(run, number=1)
 
-    cost = log("genetic", vessel, [], containers, timeSeconds)
-    print(
-        f"Finished Genetic for {vessel.containerAmount}/{len(containers)} containers in {timeSeconds:.2f}s")
+    cost = log("genetic", vessel, [], containers, timeSeconds, exe)
 
     return cost
 
 
-def Probabilistic(containers: List[Container], vessel: Vessel):
+def Probabilistic(containers: List[Container], vessel: Vessel, exe: int):
     def run():
         nonlocal vessel, containers
-        vessel_temp, _ = mcts_search(vessel, containers, 100)
+        vessel_temp, _ = solve_rolling_horizon(vessel, containers)
         if vessel_temp:
             vessel = vessel_temp
 
     timeSeconds = timeit.timeit(run, number=1)
 
-    cost = log("probabilistic", vessel, [], containers, timeSeconds)
-
-    print(
-        f"Finished Probabilistic for {vessel.containerAmount}/{len(containers)}containers in {timeSeconds:.2f}s")
+    cost = log("probabilistic", vessel, [], containers, timeSeconds, exe)
 
     return cost
 
 
-def Aproximative(containers: List[Container], vessel: Vessel):
+def Aproximative(containers: List[Container], vessel: Vessel, exe: int):
     missing: List[Container] = []
-
+    vessel.clear()
     def run():
         nonlocal vessel, containers, missing
-
         vessel, missing = heuristic_solver(containers, vessel)
     timeSeconds = timeit.timeit(run, number=1)
 
-    cost = log("aproximative", vessel, missing, containers, timeSeconds)
-
-    print(
-        f"Finished Aproximative for {vessel.containerAmount}:{len(missing)}/{len(containers)} containers in {timeSeconds:.2f}s")
+    cost = log("aproximative", vessel, missing, containers, timeSeconds, exe)
 
     return cost
 
 
-def Exact(containers: List[Container], vessel: Vessel):
+def Exact(containers: List[Container], vessel: Vessel, exe: int):
     def run():
         nonlocal vessel, containers
 
         vessel, _ = solve_stowage_lp(containers, vessel)
     timeSeconds = timeit.timeit(run, number=1)
 
-    cost = log("aproximative", vessel, [], containers, timeSeconds)
+    cost = log("exact", vessel, [], containers, timeSeconds, exe)
 
-    print(
-        f"Finished Aproximative for {vessel.containerAmount}/{len(containers)} containers in {timeSeconds:.2f}s")
 
     return cost
 
 
-def log(name: str, vessel: Vessel, missing: List[Container], containers: List[Container], timeSeconds: float) -> float:
+EXECUTIONS = 32
+BUDGET_SECONDS = 530
+
+#TODO: Really shitty
+cur_exes = EXECUTIONS
+
+def log(name: str, vessel: Vessel, missing: List[Container], containers: List[Container], timeSeconds: float, exe: int) -> float:
     with open(f"logs/{name}.csv", "a") as log:
         report = CostReport(vessel)
         log.write(f"{timeSeconds},{len(containers)},{report.log()}\n")
-    with open(f"logs/{name}.json", "a") as json:
-        json.write(',' + vessel.JSON_str() + '\n')
+
+    if exe == 0:
+        with open(f"logs/{name}.json", "a") as json:
+            json.write(',' + vessel.JSON_str() + '\n')
+
+    global cur_exes
+    print(
+        f"\t[{exe+1}/{cur_exes}]Finished ${name.capitalize()} ({report.total_cost}) for {vessel.containerAmount}/{len(containers)} containers in {timeSeconds:.2f}s")
+
     return report.total_cost
 
 
-type SolutionFunc = Callable[[List[Container], Vessel], float]
+type SolutionFunc = Callable[[List[Container], Vessel, int], float]
 
 
 class ResultEntry(TypedDict):
@@ -108,11 +114,17 @@ def main():
         "Exact": Exact,
     }
 
+
+    prune = True
     sols = sys.argv[1:]
-    if sols[0].lower() == 'all':
-        sols = solutions.keys()
+    if sols[0].lower() == 'every':
+        sols = list(solutions.keys())
+        prune = False
+    elif sols[0].lower() == 'all':
+        sols = list(solutions.keys())
     elif sols[0].lower().startswith('others'):
-        sols = solutions.keys() - ['Exact']
+        sols = list(solutions.keys())
+        sols.remove('Exact')
     else:
         for i in range(len(sols)):
             sols[i] = sols[i].capitalize()
@@ -152,29 +164,35 @@ def main():
             with open(json_path, 'w') as json:
                 json.write(init)
 
-    containerToTest = list(map(lambda x: os.path.join(
-        "containers", x), os.listdir("containers")))
-    containers = []
-    for container in containerToTest:
+    global cur_exes
+
+    def extractKey(container: str):
         matchRegex = re.match(r"^.*containers-(\d+)\.txt", container)
-        containerAmount = int(matchRegex.group(1)) if matchRegex else 0
+        if matchRegex:
+                 return container, int(matchRegex.group(1))
+        return container, 0
+    containerToTest = list(map(lambda x: extractKey(os.path.join(
+        "containers", x)), os.listdir("containers")))
+    containerToTest = sorted(containerToTest, key=lambda x: x[1])
+    containers = []
+    for container, containerAmount in containerToTest:
         if containerAmount <= 30:
-            executions = 32
+        #     executions = 32
             bays = 5
             rows = 2
             tier = 6
         if containerAmount >= 50:
-            executions = 16
+        #     executions = 16
             bays = 10
             rows = 5
             tier = 5
         if containerAmount > 250:
-            executions = 8
+        #     executions = 8
             bays = 10
             rows = 10
             tier = 10
 
-        executions = 1
+        executions = EXECUTIONS
 
         vessel = Vessel(bays=bays, rows=rows, tiers=tier)
 
@@ -182,12 +200,13 @@ def main():
             containers = conts_to_containers(eval(file.read()))
 
         for arg in sols:
-            if arg == "Exact" and len(containers) > 15:
+            if arg == "Exact" and len(containers) > 100 and prune:
                 sols.remove(arg)
             executions -= skip[arg][(len(containers),
                                      vessel.bays, vessel.rows, vessel.tiers)]
-            for _ in range(executions):
-                solutions[arg](containers, vessel)
+            cur_exes = executions
+            for exe in range(executions):
+                solutions[arg](containers, vessel, exe)
 
     # Paths to your benchmark folders
     vessel_folder = "Stowage-Planning-Benckmark/vessel_data"
@@ -206,44 +225,67 @@ def main():
     inputs: List[Tuple[List[Container], Vessel, str, str]] = []
     for v_path in v_files:
         vessel = parse_benchmark_vessel(v_path)
-        for i_path in i_files:
+        def fil(i: Path):
+            stem = v_path.stem.capitalize()
+            stem = stem[:-1] + stem[-1].upper()
+            return stem in i.parts
+
+        filtered_ifiles = filter(fil, i_files)
+        for i_path in filtered_ifiles:
             conts = parse_benchmark_containers(i_path)
 
             inputs.append((conts, vessel, v_path.parts[-1], i_path.parts[-1]))
 
     sorted_inputs = sorted(
         inputs, key=lambda inp: len(inp[0]) * inp[1].capacity)
+    
+    count = len(sorted_inputs)
 
-    for inp in sorted_inputs:
-        executions = 1
+    for idx, inp in enumerate(sorted_inputs):
+        executions = EXECUTIONS
         conts, vessel, v, i = inp
         if vessel.capacity < len(conts):
             print(
-                f"Skippng: {v} + {i} -> {len(conts)} < {vessel.bays} * {vessel.rows} * {vessel.tiers} ({vessel.capacity})")
+                f"[{idx+1}/{count}] Skippng: {v} + {i} -> {len(conts)} < {vessel.bays} * {vessel.rows} * {vessel.tiers} ({vessel.capacity})")
             continue
+        random.shuffle(sols)
         for sol in sols:
             print(
-                f"Running {sol}: {v} + {i} -> ({len(conts)}, {vessel.bays} * {vessel.rows} * {vessel.tiers})")
+                    f"[{idx+1}/{count}] Running {sol}: {v} + {i} -> ({len(conts)}, {vessel.bays} * {vessel.rows} * {vessel.tiers}):")
 
+            budget = BUDGET_SECONDS
             elapsed = 0
             cost = 0
             executions -= skip[sol][(len(conts),
                                      vessel.bays, vessel.rows, vessel.tiers)]
 
-            for _ in range(executions):
+            cur_exes = executions
+
+            exes = 0
+            for exe in range(executions):
+                exes += 1
                 start = time.perf_counter()
-                cost += solutions[sol](conts, vessel)
-                elapsed += time.perf_counter() - start
 
-            elapsed /= executions
-            cost /= executions
+                cost += solutions[sol](conts, vessel, exe)
 
-            results.append({
-                "algo": sol,
-                "time": elapsed,
-                "cost": cost,
-                "config": f"{v} | {i}"
-            })
+                el = time.perf_counter() - start
+                elapsed += el
+                budget -= el
+                 
+                if budget < 0:
+                    print("\tBudget Skip")
+                    break
+
+            if exes:
+                elapsed /= exes
+                cost /= exes
+
+                results.append({
+                    "algo": sol,
+                    "time": elapsed,
+                    "cost": cost,
+                    "config": f"{v} | {i}"
+                })
 
     # Sort results by execution time
     sorted_res = sorted(results, key=lambda x: x['time'])

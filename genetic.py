@@ -277,10 +277,19 @@ def solve_stowage_genetic(containers: List[Container], vessel: Vessel) -> Vessel
 
             # Local Search (Every 10 gens)
             if gen % 10 == 0:
-                offspring.sort(key=lambda x: sum(x.fitness.values))
-                for i in range(int(len(offspring) * 0.05)):
-                    if apply_memetic_local_search(offspring[i], sorted_containers, num_bays, num_rows, max_tiers):
-                        del offspring[i].fitness.values  # Re-eval next loop
+                # Only sort individuals with valid fitness to avoid IndexError
+                valid_offspring = [ind for ind in offspring if ind.fitness.valid]
+                valid_offspring.sort(key=lambda x: sum(x.fitness.values))
+                for ind in valid_offspring[:max(1, int(len(valid_offspring) * 0.05))]:
+                    if apply_memetic_local_search(ind, sorted_containers, num_bays, num_rows, max_tiers):
+                        del ind.fitness.values
+
+            # Re-evaluate any individuals invalidated by local search before select
+            invalid_after_ls = [ind for ind in offspring if not ind.fitness.valid]
+            if invalid_after_ls:
+                ls_fitnesses = toolbox.map(toolbox.evaluate, invalid_after_ls)  # type: ignore
+                for ind, fit in zip(invalid_after_ls, ls_fitnesses):
+                    ind.fitness.values = fit
 
             pop = toolbox.select(pop + offspring, pop_size)  # type: ignore
 
