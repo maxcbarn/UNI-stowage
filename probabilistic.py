@@ -15,9 +15,9 @@ from common import (
     W_REHANDLE, W_GM_FAIL, W_BALANCE,
 )
 
-# ==========================================
-# 1. SPATIAL INDEX (Optimized)
-# ==========================================
+
+
+
 
 class FreeTopsIndex:
     def __init__(self, vessel: Vessel) -> None:
@@ -78,9 +78,9 @@ class FreeTopsIndex:
                 return bay, row, tier
         return None
 
-# ==========================================
-# 2. HEURISTIC ENGINE
-# ==========================================
+
+
+
 
 def _ucb1(child: MCTSNode, parent_visits: int, exploration_constant: float) -> float:
     if child.visits == 0: return float("inf")
@@ -113,9 +113,9 @@ def build_crane_cache(vessel: Vessel) -> Dict[int, int]:
             cache[slot.bay] += 1
     return cache
 
-# ==========================================
-# 3. MCTS & BAY ASSIGNMENT
-# ==========================================
+
+
+
 
 def assign_preferred_bays(container: Container, free_tops: FreeTopsIndex, bay_discharge_sum: Dict[int, float], crane_cache: Dict[int, int], top_k: int = 3) -> Set[int]:
     free_bays: Set[int] = {bay for (bay, _row) in free_tops.free_tops}
@@ -164,7 +164,7 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
     sorted_cargo = sorted(initial_cargo, key=lambda c: (c.dischargePort, c.weight), reverse=True)
     root = MCTSNode(parent=None, move=None, cargo_index=0)
     
-    # Track the BEST PARTIAL solution found so far, not just the best complete one.
+    
     best_global_plan: Optional[Vessel] = None
     min_global_cost = float("inf")
     max_stowed_count = -1 
@@ -180,7 +180,7 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
         tree_coords: List[SlotCoord] = []
         tree_containers: List[Container] = []
 
-        # 1. SELECTION
+        
         while not node.is_fully_expanded and node.children:
             node = max(node.children, key=lambda c: _ucb1(c, node.visits, exploration_constant))
             if node.move:
@@ -189,7 +189,7 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
                 tree_coords.append(coord)
                 tree_containers.append(container)
 
-        # 2. EXPANSION
+        
         if node.cargo_index < len(sorted_cargo):
             if node.untried_moves is None:
                 next_c = sorted_cargo[node.cargo_index]
@@ -229,7 +229,7 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
                 node.children.append(child_node)
                 node = child_node
 
-        # 3. SIMULATION
+        
         sim_coords: List[SlotCoord] = []
         sim_containers: List[Container] = []
         sim_leftovers: List[Container] = []
@@ -251,19 +251,19 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
             else:
                 sim_leftovers.append(c)
 
-        # 4. BACKPROPAGATION & BEST PLAN UPDATE
+        
         cost = calculate_cost(root_vessel, sim_leftovers)
         stowed_items = node.cargo_index + len(sim_coords)
         
-        # FIX: Keep best PARTIAL solution. 
-        # If we stowed more items than ever before, save it.
-        # If we stowed same amount but cheaper, save it.
+        
+        
+        
         if stowed_items > max_stowed_count or (stowed_items == max_stowed_count and cost < min_global_cost):
             max_stowed_count = stowed_items
             min_global_cost = cost
             best_global_plan = copy.deepcopy(root_vessel)
 
-        # Reward logic
+        
         target_items = rollout_depth
         if len(sim_leftovers) == 0 and stowed_items == target_items:
             reward = 1.0 + 1.0 / (1.0 + cost)
@@ -277,7 +277,7 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
             backprop_node.value += reward
             backprop_node = backprop_node.parent
 
-        # 5. UNDO
+        
         for coord, container in zip(reversed(sim_coords), reversed(sim_containers)):
             _undo(root_vessel, container, coord, free_tops, crane_cache, bay_discharge_sum)
         for coord, container in zip(reversed(tree_coords), reversed(tree_containers)):
@@ -285,9 +285,9 @@ def mcts_search(root_vessel: Vessel, initial_cargo: List[Container], iterations:
 
     return best_global_plan, min_global_cost
 
-# ==========================================
-# 4. ROLLING HORIZON SOLVER
-# ==========================================
+
+
+
 
 def solve_rolling_horizon(vessel: Vessel, cargo: List[Container], chunk_size: int = 50, iterations: int = 100, exploration: float = 0.5) -> Tuple[Vessel, float]:
     sorted_cargo = sorted(cargo, key=lambda c: (c.dischargePort, c.weight), reverse=True)
@@ -297,23 +297,23 @@ def solve_rolling_horizon(vessel: Vessel, cargo: List[Container], chunk_size: in
     for i in range(0, len(sorted_cargo), chunk_size):
         chunk = sorted_cargo[i : i + chunk_size]
         
-        # 1. Run MCTS
+        
         best_ves, _ = mcts_search(vessel, chunk, iterations, exploration)
 
         if best_ves is not None:
             vessel = best_ves
             
-            # Check if MCTS missed anything in this chunk
-            # best_ves might be a partial solution (thanks to the fix above)
+            
+            
             placed_ids = set()
             for s in vessel.slots.values():
                 if s.container: placed_ids.add(s.container.id)
             
             leftovers = [c for c in chunk if c.id not in placed_ids]
         else:
-            leftovers = chunk # MCTS returned nothing (should be rare with fix)
+            leftovers = chunk 
 
-        # 2. GREEDY FALLBACK for any leftovers from MCTS
+        
         if leftovers:
             print(f"  Warning: Chunk {i//chunk_size+1} has {len(leftovers)} items for Greedy Fallback.")
             ft = FreeTopsIndex(vessel)
@@ -323,7 +323,7 @@ def solve_rolling_horizon(vessel: Vessel, cargo: List[Container], chunk_size: in
                 best_coord = None
                 best_score = -float('inf')
                 
-                # Scan ALL free tops (exhaustive)
+                
                 for bay, row, tier in ft.candidates():
                     coord = SlotCoord(bay, row, tier)
                     slot = vessel.get_slot_at(coord)
@@ -339,7 +339,7 @@ def solve_rolling_horizon(vessel: Vessel, cargo: List[Container], chunk_size: in
                     ft.place(best_coord.bay, best_coord.row)
                     cc[best_coord.bay] += 1
                 else:
-                    # If this prints, the ship is PHYSICALLY FULL or constraints are impossible
+                    
                     print(f"    CRITICAL: Container {c.id} (P:{c.dischargePort} W:{c.weight}) could not be placed.")
 
     final_cost = calculate_cost(vessel)

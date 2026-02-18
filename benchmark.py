@@ -77,7 +77,7 @@ def Exact(containers: List[Container], vessel: Vessel, exe: int):
 EXECUTIONS = 32
 BUDGET_SECONDS = 530
 
-#TODO: Really shitty
+
 cur_exes = EXECUTIONS
 
 def log(name: str, vessel: Vessel, missing: List[Container], containers: List[Container], timeSeconds: float, exe: int) -> float:
@@ -177,17 +177,17 @@ def main():
     containers = []
     for container, containerAmount in containerToTest:
         if containerAmount <= 30:
-        #     executions = 32
+        
             bays = 5
             rows = 2
             tier = 6
         if containerAmount >= 50:
-        #     executions = 16
+        
             bays = 10
             rows = 5
             tier = 5
         if containerAmount > 250:
-        #     executions = 8
+        
             bays = 10
             rows = 10
             tier = 10
@@ -208,14 +208,14 @@ def main():
             for exe in range(executions):
                 solutions[arg](containers, vessel, exe)
 
-    # Paths to your benchmark folders
+    
     vessel_folder = "Stowage-Planning-Benckmark/vessel_data"
     instance_folder = "Stowage-Planning-Benckmark/container_instances"
 
-    # Track results for sorting
+    
     results: List[ResultEntry] = []
 
-    # Get all combinations
+    
     v_files = [Path(r) / f for r, _, fs in os.walk(vessel_folder)
                for f in fs if f.endswith(".txt")]
 
@@ -287,7 +287,7 @@ def main():
                     "config": f"{v} | {i}"
                 })
 
-    # Sort results by execution time
+    
     sorted_res = sorted(results, key=lambda x: x['time'])
 
     print("\n" + "="*70)

@@ -9,13 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# Sum of 'constWeight' for all 24 bays (Calculated from file)
+
 LIGHTSHIP_WEIGHT = 60787.0
 
-# Weighted Average of 'constWeighVcg' (All bays are 18.0 in your file)
+
 LIGHTSHIP_VCG = 18.0
 
-# Hydrostatic Table: Displacement (tons) -> KM (Metacenter Height in meters)
+
 HYDRO_X = [
     54037.0, 67172.0, 80797.0, 94889.0, 109446.0, 124451.0, 139900.0,
     155794.0, 172144.0, 188981.0, 206337.0, 224263.0, 242694.0, 261543.0,
@@ -30,37 +30,37 @@ HYDRO_Y = [
     27.17, 27.32, 26.92, 27.10, 27.30, 27.34
 ]
 
-# --- PHYSICS CONSTANTS (The Source of Truth) ---
-AVG_CONTAINER_WEIGHT = 14.0  # Tons (Fallback)
-CONTAINER_HEIGHT = 2.6       # Meters (Standard container height — used as fallback only)
-MIN_GM = 1.0                 # Meters (Minimum safety limit)
 
-# FIX 1: Added DECK_HEIGHT as the true vertical reference for cargo.
-# This is the height of the weather deck above the keel (baseline).
-# Cargo VCG is measured from the keel, so tier-0 containers sit at DECK_HEIGHT,
-# NOT at lightship_vcg (which is the hull's center of gravity, not the deck).
-# Set this to the actual vessel deck height in metres. 13.0m is a typical value
-# for a large container ship; override per vessel if you have exact data.
-DECK_HEIGHT = 13.0  # Meters (keel to weather deck)
+AVG_CONTAINER_WEIGHT = 14.0  
+CONTAINER_HEIGHT = 2.6       
+MIN_GM = 1.0                 
 
-# --- UNIFIED WEIGHTS ---
-W_REHANDLE = 10000.0    # Efficiency
-W_GM_FAIL = 50000.0     # Safety (Highest Priority)
-W_BALANCE = 1.0         # Quality (Tie-breaker)
-W_LEFTOVER = 100000.0   # Critical (Must load cargo)
 
-W_STACK_BONUS = 5_000.0     # Bonus for matching discharge ports (Homogeneous stack)
-W_CRANE_BALANCE = 500.0     # Penalty for overloading one bay (Parallel ops)
 
-# Stability Weights
-W_WEIGHT_INVERSION = 5_000.0  # Penalty for Heavy on Light
-# FIX 2: Recalibrated moment weights so stability competes with other terms.
-# Previously 1.0 each, which made them ~3000x weaker than W_CRANE_BALANCE (500)
-# on a typical 30-ton container at tier 3 (score delta = 0.09 vs 500+).
-# New values bring stability penalties into the same order of magnitude as
-# W_WEIGHT_INVERSION and W_STACK_BONUS (both 5000).
-W_MOMENT_TIER = 200.0   # Minimize VCG (Vertical)   — was 1.0
-W_MOMENT_ROW  = 300.0   # Minimize List (Transverse) — was 1.0
+
+
+
+
+DECK_HEIGHT = 13.0  
+
+
+W_REHANDLE = 10000.0    
+W_GM_FAIL = 50000.0     
+W_BALANCE = 1.0         
+W_LEFTOVER = 100000.0   
+
+W_STACK_BONUS = 5_000.0     
+W_CRANE_BALANCE = 500.0     
+
+
+W_WEIGHT_INVERSION = 5_000.0  
+
+
+
+
+
+W_MOMENT_TIER = 200.0   
+W_MOMENT_ROW  = 300.0   
 
 Numeric = TypeVar("Numeric", int, float)
 
@@ -118,10 +118,10 @@ class SlotCoord:
     tier: int
 
 
-# FIX 3: Removed duplicate field declarations for bays, rows, tiers.
-# The original dataclass declared each of them twice; Python silently used
-# the last declaration, but it was a latent bug waiting to cause trouble
-# during any refactor. Now each field appears exactly once, in logical order.
+
+
+
+
 @dataclass
 class Vessel:
     bays: int = 0
@@ -131,8 +131,8 @@ class Vessel:
     lightship_vcg: float = LIGHTSHIP_VCG
     hydro_disp: List[float] = field(default_factory=lambda: HYDRO_X)
     hydro_km: List[float] = field(default_factory=lambda: HYDRO_Y)
-    # deck_height: height of weather deck above keel (metres).
-    # Cargo VCG is referenced from the keel, so tier-0 containers sit at deck_height.
+    
+    
     deck_height: float = DECK_HEIGHT
 
     def __post_init__(self):
@@ -147,22 +147,22 @@ class Vessel:
     def JSON_str(self) -> str:
         rep = CostReport(self)
         return json.dumps({
-            # --- State Metadata ---
+            
             "contCount": self.containerAmount,
             "bays": self.bays,
             "rows": self.rows,
             "tiers": self.tiers,
             
-            # --- Physical Constants ---
+            
             "lightship_weight": self.lightship_weight,
             "lightship_vcg": self.lightship_vcg,
             "deck_height": self.deck_height,
             
-            # --- Hydrostatic Tables (Crucial for validation) ---
+            
             "hydro_disp": self.hydro_disp,
             "hydro_km": self.hydro_km,
             
-            # --- Calculated Metrics ---
+            
             "cost": rep.total_cost,
             "rehandles": rep.rehandles,
             "gm": rep.gm,
@@ -170,13 +170,13 @@ class Vessel:
             "bayMoment": rep.bay_moment,
             "tierMoment": rep.tier_moment,
             
-            # --- Slot/Cargo Data ---
+            
             "slots": [
                 {
                     "bay": coord.bay,
                     "row": coord.row,
                     "tier": coord.tier,
-                    "vcg": slot.vcg, # Critical: The stack base height
+                    "vcg": slot.vcg, 
                     "container": {
                         "id": slot.container.id,
                         "weight": slot.container.weight,
@@ -278,14 +278,14 @@ def calculate_gm(vessel: Vessel) -> float:
     - This avoids the "flat barge" error where hold cargo was artificially raised.
     """
     
-    # --- Constants for ISO Tier Heuristic ---
-    TIER_ON_DECK_START = 80   # ISO standard: 82 is usually the first deck tier
-    TANK_TOP_HEIGHT = 0.5     # Approx height of hold bottom above keel (adjust if needed)
+    
+    TIER_ON_DECK_START = 80   
+    TANK_TOP_HEIGHT = 0.5     
     
     cargo_weight = 0.0
     cargo_moment = 0.0
 
-    # Group slots by stack (bay, row) to process them bottom-up
+    
     stacks: Dict[Tuple[int, int], List[Slot]] = {}
     for slot in vessel.slots.values():
         if slot.container:
@@ -293,23 +293,23 @@ def calculate_gm(vessel: Vessel) -> float:
             stacks.setdefault(key, []).append(slot)
 
     for stack_slots in stacks.values():
-        # Sort by tier to stack from bottom to top
+        
         stack_slots.sort(key=lambda s: s.tier)
         
-        # Track the top of the 'current' stack. 
-        # We initialize at tank top, but will jump if we hit a deck tier.
+        
+        
         current_base_height = TANK_TOP_HEIGHT
         
         for slot in stack_slots:
-            # CHECK: Are we transitioning to the deck?
+            
             if slot.tier >= TIER_ON_DECK_START:
-                # If we are on deck, the base of this container MUST be at least at deck_height.
-                # We use max() to ensure we don't drop down if the hold stack 
-                # somehow exceeds deck height (unlikely but safe).
+                
+                
+                
                 current_base_height = max(current_base_height, vessel.deck_height)
             
-            # Calculate VCG for this specific container
-            # VCG = Base + Half Height
+            
+            
             half_height = slot.container.height / 2.0
             vcg_container = current_base_height + half_height
             
@@ -317,44 +317,44 @@ def calculate_gm(vessel: Vessel) -> float:
             cargo_weight += w
             cargo_moment += w * vcg_container
             
-            # Update the base for the NEXT container in this stack
+            
             current_base_height += slot.container.height
 
-    # --- Hydrostatic Calculation ---
+    
     disp = vessel.lightship_weight + cargo_weight
     
     if disp == 0:
-        return 20.0  # Fallback for empty vessel
+        return 20.0  
 
-    # VCG = (Lightship Moment + Cargo Moment) / Total Displacement
+    
     vcg = ((vessel.lightship_weight * vessel.lightship_vcg) + cargo_moment) / disp
     
-    # Look up KM (Keel to Metacenter) from hydro tables
-    # (Assuming vessel.hydro_disp and vessel.hydro_km are sorted lists/arrays)
+    
+    
     km = np.interp(disp, vessel.hydro_disp, vessel.hydro_km)
     
     return km - vcg
 
 
 def calculate_cost(vessel: Vessel, leftovers: List[Container] = []) -> float:
-    # 1. Safety (GM)
+    
     gm = calculate_gm(vessel)
     cost_gm = (MIN_GM - gm) * W_GM_FAIL if gm < MIN_GM else 0.0
 
-    # 2. Efficiency (Rehandles)
+    
     cost_rehandles = vessel.calculate_rehandles() * W_REHANDLE
 
-    # 3. Balance (Moments)
+    
     cost_balance = (abs(vessel.calculate_bay_moment()) +
                     abs(vessel.calculate_row_moment())) * W_BALANCE
 
-    # 4. Critical (Leftovers)
+    
     cost_leftover = len(leftovers) * W_LEFTOVER
 
     return cost_gm + cost_rehandles + cost_balance + cost_leftover
 
 
-# --- DATA STRUCTURES & UTILS ---
+
 
 @dataclass
 class CostReport:
@@ -366,9 +366,9 @@ class CostReport:
 
     def __post_init__(self):
         self.rehandles = self.vessel.calculate_rehandles()
-        # FIX 4: Guard against None returns from moment calculations.
-        # calculate_*_moment() already returns 0.0 for empty vessels, but
-        # this makes the contract explicit and prevents log() from crashing.
+        
+        
+        
         bay_m = self.vessel.calculate_bay_moment() or 0.0
         row_m = self.vessel.calculate_row_moment() or 0.0
         tier_m = self.vessel.calculate_tier_moment() or 0.0
@@ -417,7 +417,7 @@ def parse_benchmark_vessel(filepath: Path) -> Vessel:
     above_deck_vcgs: List[float] = []
     slot_definitions = []
 
-    # Context trackers
+    
     current_bay = -1
     current_row = -1
     current_section_vcg = 0.0
@@ -431,8 +431,8 @@ def parse_benchmark_vessel(filepath: Path) -> Vessel:
         if not line or line.startswith("//"):
             continue
 
-        # --- A. Global Dimensions ---
-        if line.startswith("# Ship:"):
+        
+        if line.startswith("
             try:
                 parts = lines[i+1].split()
                 bays = int(parts[0])
@@ -443,32 +443,32 @@ def parse_benchmark_vessel(filepath: Path) -> Vessel:
             section_hydro = False
             continue
 
-        # --- B. Hydrostatics ---
-        if line.startswith("## HydroPoints:"):
+        
+        if line.startswith("
             section_hydro = True
             continue
         
-        # --- C. Bay Context ---
-        if line.startswith("## Bay:"):
+        
+        if line.startswith("
             section_hydro = False
             parts = line.split()
-            # Check if inline: "## Bay: 0 ..." vs Header: "## Bay: index ..."
+            
             if len(parts) > 2 and parts[2].isdigit():
                 current_bay = int(parts[2])
-                # If data is inline (rare variant)
+                
                 if len(parts) >= 7:
                     w = float(parts[5])
                     vcg = float(parts[6])
                     total_bay_weight += w
                     total_bay_moment += (w * vcg)
             else:
-                # Data is on NEXT line
+                
                 try:
                     data_line = lines[i+1].strip()
                     d_parts = data_line.split()
                     if d_parts and d_parts[0].replace('-','').isdigit():
                         current_bay = int(d_parts[0])
-                        # Get weight/vcg from data line
+                        
                         if len(d_parts) >= 7:
                             w = float(d_parts[5])
                             vcg = float(d_parts[6])
@@ -478,10 +478,10 @@ def parse_benchmark_vessel(filepath: Path) -> Vessel:
                     pass
             continue
 
-        # --- D. Stack (Row) Context ---
-        if line.startswith("### Stack:"):
+        
+        if line.startswith("
             parts = line.split()
-            # Check inline vs next line
+            
             if len(parts) > 2 and parts[2].isdigit():
                 current_row = int(parts[2])
             else:
@@ -494,28 +494,28 @@ def parse_benchmark_vessel(filepath: Path) -> Vessel:
                     pass
             continue
 
-        # --- E. Section VCG (Above/Below Deck) ---
-        if line.startswith("#### AboveDeck:") or line.startswith("#### BelowDeck:"):
+        
+        if line.startswith("
             try:
-                # Data is ALWAYS on next line for these blocks in standard files
+                
                 data_line = lines[i+1].strip()
                 d_parts = data_line.split()
-                # Format: id maxH maxW20 maxW40 vcg
+                
                 vcg = float(d_parts[-1])
                 current_section_vcg = vcg
                 
-                if line.startswith("#### AboveDeck:"):
+                if line.startswith("
                     above_deck_vcgs.append(vcg)
             except (IndexError, ValueError):
                 pass
             continue
 
-        # --- F. Tiers (Slots) ---
-        # The header "#### Cell: tier reefer" usually precedes the list
-        if line.startswith("#### Cell:"):
+        
+        
+        if line.startswith("
             continue
 
-        # Hydro Data Processing
+        
         if section_hydro:
             parts = line.split()
             if len(parts) == 4 and parts[0].replace('.', '', 1).replace('-', '').isdigit():
@@ -523,19 +523,19 @@ def parse_benchmark_vessel(filepath: Path) -> Vessel:
                 hydro_km.append(float(parts[3]))
             continue
 
-        # Slot Processing (if line starts with a digit and we have context)
-        # We must ensure we aren't reading a line we already peeked at (like Bay data)
-        # But since headers are distinct, we only process raw numbers here.
+        
+        
+        
         if current_bay >= 0 and current_row >= 0 and line[0].isdigit():
-            # Distinguish between "Bay Definition Data" and "Tier Data"
-            # Bay/Stack definitions usually have many columns (LCG, Shear, etc.)
-            # Tier definitions usually have 2 columns: "tier reefer"
+            
+            
+            
             parts = line.split()
             
             if len(parts) == 2:
                 try:
                     tier = int(parts[0])
-                    # Store slot
+                    
                     slot_definitions.append({
                         'bay': current_bay,
                         'row': current_row,
@@ -545,11 +545,11 @@ def parse_benchmark_vessel(filepath: Path) -> Vessel:
                 except ValueError:
                     pass
 
-    # --- Reconstruction ---
+    
     lightship_vcg = total_bay_moment / total_bay_weight if total_bay_weight > 0 else 15.0
     deck_height = min(above_deck_vcgs) if above_deck_vcgs else 15.0
 
-    # Determine max dimensions from observed slots
+    
     if slot_definitions:
         bays = max(bays, max(s['bay'] for s in slot_definitions) + 1)
         rows = max(rows, max(s['row'] for s in slot_definitions) + 1)
@@ -566,7 +566,7 @@ def parse_benchmark_vessel(filepath: Path) -> Vessel:
         deck_height=deck_height
     )
 
-    # Populate
+    
     for s_def in slot_definitions:
         coord = SlotCoord(s_def['bay'], s_def['row'], s_def['tier'])
         if coord in v.slots:
@@ -603,10 +603,10 @@ def parse_benchmark_containers(filepath: Path) -> List[Container]:
         if not line or line.startswith("//"):
             continue
 
-        if "# Transport type" in line:
+        if "
             mode = "WEIGHTS"
             continue
-        elif "# Container" in line:
+        elif "
             mode = "LOADLIST"
             continue
 

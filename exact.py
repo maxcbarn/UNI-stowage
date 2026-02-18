@@ -12,8 +12,8 @@ from common import (
 def solve_stowage_lp(
     containers: List[Container],
     vessel: Vessel,
-    ALPHA: float = W_REHANDLE,  # rehandle penalty — aligns with common.py weights
-    BETA: float = W_BALANCE,    # CoG deviation penalty — aligns with common.py weights
+    ALPHA: float = W_REHANDLE,  
+    BETA: float = W_BALANCE,    
 ) -> tuple[Vessel, float]:
     """
     ILP stowage solver.
@@ -49,7 +49,7 @@ def solve_stowage_lp(
 
     B = list(range(vessel.bays))
     R = list(range(vessel.rows))
-    T = list(range(1, vessel.tiers + 1))   # tiers numbered 1..max_tiers
+    T = list(range(1, vessel.tiers + 1))   
     C = list(range(len(containers)))
 
     dest = {i: containers[i].dischargePort for i in C}
@@ -62,23 +62,23 @@ def solve_stowage_lp(
 
     prob = pulp.LpProblem("Stowage_LP", pulp.LpMinimize)
 
-    # ------------------------------------------------------------------
-    # Decision variables
-    # ------------------------------------------------------------------
+    
+    
+    
 
-    # x[b][r][t][i] = 1  iff container i is placed at (bay b, row r, tier t)
+    
     x = pulp.LpVariable.dicts(
         "x", (B, R, T, C), lowBound=0, upBound=1, cat="Binary"
     )
 
-    # y[(i,j)][b][r] = 1  iff container i (earlier dest) is below j (later dest)
-    # in the same column — i.e. a rehandle
+    
+    
     pairs = [(i, j) for i in C for j in C if dest[i] < dest[j]]
     y = pulp.LpVariable.dicts(
         "y", (pairs, B, R), lowBound=0, upBound=1, cat="Binary"
     )
 
-    # Absolute deviation variables for the three CoG axes (linearised |·|)
+    
     Db_pos = pulp.LpVariable("Db_pos", lowBound=0)
     Db_neg = pulp.LpVariable("Db_neg", lowBound=0)
     Dr_pos = pulp.LpVariable("Dr_pos", lowBound=0)
@@ -86,9 +86,9 @@ def solve_stowage_lp(
     Dt_pos = pulp.LpVariable("Dt_pos", lowBound=0)
     Dt_neg = pulp.LpVariable("Dt_neg", lowBound=0)
 
-    # ------------------------------------------------------------------
-    # Objective: linear proxy for calculate_cost()
-    # ------------------------------------------------------------------
+    
+    
+    
     sum_rehandles = pulp.lpSum(
         y[(i, j)][b][r] for (i, j) in pairs for b in B for r in R
     )
@@ -96,18 +96,18 @@ def solve_stowage_lp(
 
     prob += ALPHA * sum_rehandles + BETA * sum_cog_dev
 
-    # ------------------------------------------------------------------
-    # Constraints
-    # ------------------------------------------------------------------
+    
+    
+    
 
-    # 1. Each container placed exactly once
+    
     for i in C:
         prob += (
             pulp.lpSum(x[b][r][t][i] for b in B for r in R for t in T) == 1,
             f"place_once_{i}",
         )
 
-    # 2. At most one container per slot
+    
     for b in B:
         for r in R:
             for t in T:
@@ -116,7 +116,7 @@ def solve_stowage_lp(
                     f"slot_unique_b{b}_r{r}_t{t}",
                 )
 
-    # 3. No floating containers: tier t occupied only if tier t-1 occupied
+    
     for b in B:
         for r in R:
             for t in T:
@@ -128,7 +128,7 @@ def solve_stowage_lp(
                     f"no_float_b{b}_r{r}_t{t}",
                 )
 
-    # 4. Rehandle linking: y[(i,j)][b][r] is 1 when i sits below j in (b,r)
+    
     for (i, j) in pairs:
         for b in B:
             for r in R:
@@ -140,7 +140,7 @@ def solve_stowage_lp(
                                 >= x[b][r][t1][i] + x[b][r][t2][j] - 1,
                                 f"rh_link_i{i}_j{j}_b{b}_r{r}_t{t1}_{t2}",
                             )
-                # Upper bounds: y can only be 1 if both i and j are in column (b,r)
+                
                 prob += (
                     y[(i, j)][b][r]
                     <= pulp.lpSum(x[b][r][t][i] for t in T),
@@ -152,7 +152,7 @@ def solve_stowage_lp(
                     f"rh_ub2_i{i}_j{j}_b{b}_r{r}",
                 )
 
-    # 5. CoG moment balance (linearised absolute deviation)
+    
     bay_moment = pulp.lpSum(
         weight[i] * b * x[b][r][t][i]
         for i in C for b in B for r in R for t in T
@@ -171,18 +171,18 @@ def solve_stowage_lp(
     prob += tier_moment - target_tier * \
         total_weight == Dt_pos - Dt_neg, "tier_balance"
 
-    # ------------------------------------------------------------------
-    # Solve
-    # ------------------------------------------------------------------
+    
+    
+    
     solver = pulp.PULP_CBC_CMD(msg=True, threads=os.cpu_count())
     prob.solve(solver)
 
     status = pulp.LpStatus[prob.status]
     print(f"[LP] Solver status: {status}")
 
-    # ------------------------------------------------------------------
-    # Extract solution into a Vessel
-    # ------------------------------------------------------------------
+    
+    
+    
     result_vessel = Vessel(
         bays=vessel.bays,
         rows=vessel.rows,
@@ -195,14 +195,14 @@ def solve_stowage_lp(
 
     leftovers: List[Container] = []
 
-    if prob.status == pulp.LpStatusOptimal or prob.status == 1:  # Optimal or feasible
+    if prob.status == pulp.LpStatusOptimal or prob.status == 1:  
         placed = set()
         for i in C:
             for b in B:
                 for r in R:
                     for t in T:
                         if pulp.value(x[b][r][t][i]) is not None and round(pulp.value(x[b][r][t][i])) == 1:
-                            # LP uses 1-indexed tiers; Vessel uses 0-indexed
+                            
                             coord = SlotCoord(b, r, t - 1)
                             slot = result_vessel.get_slot_at(coord)
                             if slot is not None:
@@ -213,9 +213,9 @@ def solve_stowage_lp(
         print("[LP] No feasible solution found — returning empty vessel.")
         leftovers = list(containers)
 
-    # ------------------------------------------------------------------
-    # Canonical cost via common.py (used for cross-solver comparison)
-    # ------------------------------------------------------------------
+    
+    
+    
     cost = calculate_cost(result_vessel, leftovers)
 
     rehandles = result_vessel.calculate_rehandles()

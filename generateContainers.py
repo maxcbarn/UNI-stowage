@@ -7,7 +7,7 @@ from common import Cont
 
 
 def ContainerRandom(number: int) -> List[Cont]:
-    # Generating 250 containers starting from id 11
+    
     containers_250: List[Cont] = [
         {
             'id': i,
